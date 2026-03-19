@@ -7,6 +7,7 @@ import { URDFAdapter } from '../adapters/URDFAdapter.js';
 import { MJCFAdapter } from '../adapters/MJCFAdapter.js';
 import { USDAdapter } from '../adapters/USDAdapter.js';
 import { XacroAdapter } from '../adapters/XacroAdapter.js';
+import { addDiagnostic, addDiagnostics, createMissingResourceDiagnostic, extractURDFResourceReferences, getSuggestedResourceCandidates, matchResourceReference, upsertResourceSummaryDiagnostic } from '../utils/DiagnosticsUtils.js';
 
 export class ModelLoaderFactory {
     /**
@@ -20,6 +21,8 @@ export class ModelLoaderFactory {
                 return 'urdf';
             case 'xacro':
                 return 'xacro';
+            case 'mjcf':
+                return 'mjcf';
             case 'xml':
                 // XML files are MJCF format, verify if it's a robot file by content
                 if (content) {
@@ -144,6 +147,63 @@ export class ModelLoaderFactory {
 
         return new Promise((resolve, reject) => {
             const loader = new URDFLoader();
+            const resourceDiagnostics = [];
+            const missingResourceKeys = new Set();
+            const resourceReferences = extractURDFResourceReferences(content);
+            let currentModel = null;
+            let refreshScheduled = false;
+
+            const refreshDiagnosticsUI = () => {
+                if (refreshScheduled) {
+                    return;
+                }
+
+                refreshScheduled = true;
+                requestAnimationFrame(() => {
+                    refreshScheduled = false;
+
+                    if (typeof window === 'undefined' || !window.app || window.app.currentModel !== currentModel) {
+                        return;
+                    }
+
+                    window.app.diagnosticsView?.render(currentModel, window.app.fileHandler?.getCurrentModelFile());
+                    window.app.modelGraphView?.drawModelGraph(currentModel);
+                    window.app.jointControlsUI?.setupJointControls(currentModel);
+                });
+            };
+
+            const buildMissingResourceDiagnostic = (path, candidates = []) => {
+                const reference = matchResourceReference(path, resourceReferences);
+                const suggestedCandidates = getSuggestedResourceCandidates(path, fileMap, candidates);
+
+                return createMissingResourceDiagnostic({
+                    source: 'urdf',
+                    filePath: fileName,
+                    path,
+                    candidates: suggestedCandidates,
+                    reference
+                });
+            };
+
+            const reportMissingResource = (path, candidates = []) => {
+                if (!path) return;
+
+                const key = `${path}|${candidates.join('|')}`;
+                if (missingResourceKeys.has(key)) {
+                    return;
+                }
+
+                missingResourceKeys.add(key);
+                const diagnostic = buildMissingResourceDiagnostic(path, candidates);
+
+                if (currentModel) {
+                    addDiagnostic(currentModel, diagnostic);
+                    upsertResourceSummaryDiagnostic(currentModel);
+                    refreshDiagnosticsUI();
+                } else {
+                    resourceDiagnostics.push(diagnostic);
+                }
+            };
 
             // Enable collision parsing
             loader.parseCollision = true;
@@ -276,12 +336,20 @@ export class ModelLoaderFactory {
                     if (!matchedFile) {
                         // Try filename only match
                         const targetFileName = normalizedPath.split('/').pop() || meshPath.split('/').pop();
+                        const candidates = [];
                         for (const [key, file] of fileMap.entries()) {
                             const keyFileName = key.split('/').pop();
                             if (keyFileName === targetFileName) {
                                 matchedFile = file;
                                 break;
                             }
+                            if (targetFileName && candidates.length < 5 && keyFileName?.includes(targetFileName)) {
+                                candidates.push(key);
+                            }
+                        }
+
+                        if (!matchedFile && (isTextureFile || isMeshFile)) {
+                            reportMissingResource(url, candidates);
                         }
                     }
 
@@ -290,6 +358,10 @@ export class ModelLoaderFactory {
                         const bloburl = URL.createObjectURL(matchedFile);
                         // IMPORTANT: Return the blob URL directly - TextureLoader will use it as-is
                         return bloburl;
+                    }
+
+                    if (isTextureFile || isMeshFile) {
+                        reportMissingResource(url);
                     }
 
                     // If not found, return original URL - urdf-loader will handle it
@@ -322,6 +394,7 @@ export class ModelLoaderFactory {
                                 done(null, err);
                             });
                         } else {
+                            reportMissingResource(path);
                             // If not found, try using original path loader
                             originalLoadMeshCb(path, manager, done);
                         }
@@ -343,6 +416,8 @@ export class ModelLoaderFactory {
                 // Convert to unified model
                 try {
                     const model = URDFAdapter.convert(robot, content); // Pass original XML content
+                    currentModel = model;
+                    addDiagnostics(model, resourceDiagnostics);
                     resolve(model);
                 } catch (error) {
                     console.error('URDF conversion error:', error);

@@ -261,6 +261,8 @@ export class PanelManager {
         this.registerPanel('floating-files-panel');
         this.registerPanel('floating-joints-panel');
         this.registerPanel('floating-model-tree');
+        this.registerPanel('floating-diagnostics-panel');
+        this.registerPanel('floating-review-panel');
         this.registerPanel('floating-help-panel');
         this.registerPanel('code-editor-panel', '.code-editor-header');
 

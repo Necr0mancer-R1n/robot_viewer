@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="xacro_source_map_fixture">
+  <xacro:arg name="mesh_variant" default="meshes/missing_trace.stl"/>
+  <xacro:include filename="includes/common.xacro"/>
+  <xacro:build_link link_name="trace_link"/>
+</robot>

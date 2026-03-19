@@ -29,6 +29,8 @@
 - **Visualization Tools**: Visual/collision geometry, inertia tensors, center of mass, coordinate frames, joint axes, shadows, coordinate system orientation
 - **Interactive Controls**: Drag joints in real-time, adjust model poses
 - **Measurement Tools**: Measure distances between joints and links with 3D visualization, display X/Y/Z axis projections and total distance, support ground height measurement
+- **Diagnostics Workflow**: Structured model and runtime diagnostics with health states, missing resource detection, and UI linkage across the panel, graph, joint controls, and editor
+- **Review Snapshots**: Export review context as JSON, including comments, selection, camera state, joint state, and diagnostics state
 - **Code Editor**: Built-in CodeMirror editor with syntax highlighting and live preview
 - **Physics Simulation**: Integrated MuJoCo engine for dynamics simulation (MJCF models)
 - **Scene Management**: File tree and scene graph visualization with hierarchical structure
@@ -58,6 +60,38 @@ pnpm run build
 ```
 
 Output will be in the `dist/` directory.
+
+## Diagnostics and Review
+
+Robot Viewer includes a debugger-oriented diagnostics workflow for URDF and Xacro models, helping you understand why a model is incomplete, degraded, or only partially loadable after import.
+
+- **Diagnostics Panel**: Inspect model and runtime diagnostics in one place, including severity summary chips, missing resource candidates, and quick navigation to related links, joints, or editor locations
+- **Resource Tracking**: Missing visual meshes, collision meshes, textures, and Xacro include failures are tracked during resource resolution with best-effort source context
+- **Health State**: Models surface a high-level state of `healthy`, `degraded`, `broken`, or `unloadable`
+- **Top-Level Alerts**: Major integrity issues can also appear in a banner so critical problems are not buried in the panel
+
+Robot Viewer also supports review snapshot export for sharing inspection context. A snapshot can capture:
+
+- model metadata such as file path, file name, and file type
+- review comments anchored to links, joints, or diagnostics
+- camera state, current selection, joint state, and diagnostics panel filters or focus
+
+For the full snapshot schema, see [`docs/review-snapshot-schema.md`](./docs/review-snapshot-schema.md). For more details on the diagnostics design and behavior, see [`docs/diagnostics-log.md`](./docs/diagnostics-log.md).
+
+## Diagnostics Fixtures
+
+For diagnostics-related development, the repository includes a fixed fixture set for regression checking. These fixtures help validate missing resources, Xacro include failures, source mapping behavior, severity handling, and model health calculation.
+
+When the app is running in development mode, fixture helpers are exposed on `window.app`:
+
+```js
+window.app.listDiagnosticsFixtures()
+window.app.loadDiagnosticsFixture(id)
+window.app.runDiagnosticsFixture(id)
+window.app.runAllDiagnosticsFixtures()
+```
+
+Fixture assets live under `public/diagnostics-fixtures/`. The full fixture list, workflow, and expected result structure are documented in [`docs/diagnostics-fixtures.md`](./docs/diagnostics-fixtures.md).
 
 ## Contributing
 

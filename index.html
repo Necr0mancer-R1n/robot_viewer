@@ -468,6 +468,66 @@
             transform: scale(0.98);
         }
 
+        .tool-dropdown {
+            position: relative;
+        }
+
+        .tool-dropdown-caret {
+            font-size: 10px;
+            opacity: 0.8;
+        }
+
+        .tool-dropdown.open .tool-dropdown-caret {
+            transform: rotate(180deg);
+        }
+
+        .tool-dropdown-menu {
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 0;
+            min-width: 168px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 6px;
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px) saturate(150%);
+            -webkit-backdrop-filter: blur(20px) saturate(150%);
+            border: 0.5px solid var(--glass-border);
+            border-radius: 14px;
+            box-shadow: var(--glass-shadow);
+            z-index: 120;
+        }
+
+        .tool-dropdown-menu[hidden] {
+            display: none !important;
+        }
+
+        .tool-dropdown-item {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            width: 100%;
+            padding: 8px 10px;
+            background: transparent;
+            border: none;
+            border-radius: 10px;
+            color: var(--text-primary);
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.2s ease, color 0.2s ease;
+        }
+
+        .tool-dropdown-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        [data-theme="light"] .tool-dropdown-item:hover {
+            background: rgba(0, 0, 0, 0.05);
+        }
+
         /* Drop zone */
         #drop-zone {
             position: fixed;
@@ -1322,6 +1382,650 @@
             left: 20px !important;
             width: calc(100vw - 40px) !important;
             height: calc(100vh - 100px) !important;
+        }
+
+        #floating-diagnostics-panel {
+            top: calc(80px + 340px + 20px);
+            left: 20px;
+            width: 360px;
+            height: calc(100vh - 80px - 340px - 40px);
+            display: none;
+            transition: all 0.4s var(--spring);
+        }
+
+        #floating-diagnostics-panel.maximized {
+            top: 80px !important;
+            left: 20px !important;
+            width: calc(100vw - 40px) !important;
+            height: calc(100vh - 100px) !important;
+        }
+
+        #floating-review-panel {
+            top: 80px;
+            left: calc(100vw - 360px - 20px);
+            width: 360px;
+            min-height: 240px;
+            max-height: calc(100vh - 100px);
+            display: none;
+            flex-direction: column;
+            transition: all 0.4s var(--spring);
+        }
+
+        #floating-review-panel.maximized {
+            top: 80px !important;
+            left: 20px !important;
+            width: calc(100vw - 40px) !important;
+            height: calc(100vh - 100px) !important;
+        }
+
+        .diagnostics-summary {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .diagnostics-health-chip {
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-primary);
+        }
+
+        .diagnostics-health-chip.healthy {
+            color: #8ee28e;
+        }
+
+        .diagnostics-health-chip.degraded {
+            color: #ffd166;
+        }
+
+        .diagnostics-health-chip.broken,
+        .diagnostics-health-chip.unloadable {
+            color: #ff8f8f;
+        }
+
+        .diagnostics-filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .diagnostics-filter-btn {
+            padding: 5px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text-secondary);
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .diagnostics-filter-btn:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-primary);
+        }
+
+        .diagnostics-filter-btn.active {
+            background: rgba(10, 132, 255, 0.18);
+            border-color: rgba(10, 132, 255, 0.35);
+            color: #8ec5ff;
+        }
+
+        .diagnostics-filter-btn:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+
+        .diagnostics-chip {
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .diagnostics-chip.error {
+            color: #ff8f8f;
+        }
+
+        .diagnostics-chip.warning {
+            color: #ffd166;
+        }
+
+        .diagnostics-chip.info {
+            color: #8ec5ff;
+        }
+
+        .diagnostics-section {
+            margin-bottom: 16px;
+        }
+
+        .diagnostics-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .diagnostics-section-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .diagnostics-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .diagnostic-item {
+            width: 100%;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text-primary);
+            text-align: left;
+            padding: 10px 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .diagnostic-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .diagnostic-item.focused {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 1px rgba(10, 132, 255, 0.3);
+        }
+
+        .diagnostic-item.selected {
+            border-color: rgba(251, 191, 36, 0.85);
+            box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.35);
+            background: rgba(251, 191, 36, 0.08);
+        }
+
+        .review-panel-content {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            height: 100%;
+            min-height: 0;
+        }
+
+        .review-current-target {
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.04);
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--text-primary);
+            white-space: pre-wrap;
+        }
+
+        .review-current-target.active {
+            border-color: rgba(10, 132, 255, 0.35);
+            box-shadow: 0 0 0 1px rgba(10, 132, 255, 0.2);
+            background: rgba(10, 132, 255, 0.08);
+        }
+
+        .review-current-target.empty {
+            color: var(--text-secondary);
+        }
+
+        .review-comment-composer {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .review-comment-input {
+            min-height: 84px;
+            resize: vertical;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text-primary);
+            padding: 10px 12px;
+            font: inherit;
+            line-height: 1.5;
+            outline: none;
+        }
+
+        .review-comment-input:focus {
+            border-color: rgba(10, 132, 255, 0.35);
+            box-shadow: 0 0 0 1px rgba(10, 132, 255, 0.2);
+        }
+
+        .review-comment-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .review-comment-count {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-right: auto;
+        }
+
+        .review-comment-select-3d-btn {
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-primary);
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+        }
+
+        .review-comment-select-3d-btn.active {
+            background: rgba(10, 132, 255, 0.16);
+            border-color: rgba(10, 132, 255, 0.45);
+            color: var(--accent);
+        }
+
+        .review-comment-add-btn {
+            border: none;
+            border-radius: 10px;
+            background: var(--accent);
+            color: white;
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .review-comment-add-btn:disabled {
+            opacity: 0.45;
+            cursor: default;
+        }
+
+        .review-comment-cancel-btn {
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-secondary);
+            padding: 8px 12px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .review-comment-cancel-btn[hidden] {
+            display: none !important;
+        }
+
+        .review-comments-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 0;
+            overflow-y: auto;
+            padding-right: 2px;
+        }
+
+        .review-comments-empty {
+            padding: 10px 0;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .review-comment-item {
+            width: 100%;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text-primary);
+            text-align: left;
+            padding: 12px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .review-comment-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .review-comment-item.active {
+            border-color: rgba(10, 132, 255, 0.38);
+            box-shadow: 0 0 0 1px rgba(10, 132, 255, 0.22);
+            background: rgba(10, 132, 255, 0.08);
+        }
+
+        .review-comment-item.editing {
+            border-color: rgba(251, 191, 36, 0.42);
+            box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.24);
+        }
+
+        .review-comment-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .review-comment-target {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .review-comment-time {
+            flex-shrink: 0;
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .review-comment-toolbar {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        .review-comment-action-btn {
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-secondary);
+            padding: 4px 8px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        .review-comment-action-btn.delete {
+            color: #ff9b9b;
+        }
+
+        .review-comment-body {
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--text-primary);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .diagnostic-item-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        .diagnostic-level {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            opacity: 0.8;
+        }
+
+        .diagnostic-level.error {
+            color: #ff8f8f;
+        }
+
+        .diagnostic-level.warning {
+            color: #ffd166;
+        }
+
+        .diagnostic-level.info {
+            color: #8ec5ff;
+        }
+
+        .diagnostic-target {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .diagnostic-message {
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        .diagnostic-meta {
+            font-size: 11px;
+            color: var(--text-tertiary);
+            margin-top: 6px;
+            word-break: break-all;
+        }
+
+        .joint-diagnostic-badge {
+            margin-left: auto;
+            min-width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            background: rgba(255, 107, 107, 0.18);
+            color: #ff8f8f;
+            font-size: 10px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 6px;
+        }
+
+        /* Diagnostics banner */
+        .diagnostics-banner {
+            position: absolute;
+            top: 60px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 200;
+            display: none;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 16px;
+            border-radius: 12px;
+            font-size: 13px;
+            max-width: calc(100vw - 80px);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            animation: bannerSlideIn 0.3s ease;
+        }
+
+        @keyframes bannerSlideIn {
+            from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+            to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+
+        .diagnostics-banner.error {
+            background: rgba(200, 40, 40, 0.85);
+            border: 1px solid rgba(255, 100, 100, 0.4);
+            color: #fff;
+        }
+
+        .diagnostics-banner.fatal {
+            background: rgba(160, 20, 20, 0.9);
+            border: 1px solid rgba(255, 60, 60, 0.5);
+            color: #fff;
+        }
+
+        .diagnostics-banner.warning {
+            background: rgba(180, 130, 20, 0.85);
+            border: 1px solid rgba(255, 200, 60, 0.4);
+            color: #fff;
+        }
+
+        .diagnostics-banner-icon {
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+
+        .diagnostics-banner-text {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .diagnostics-banner-primary {
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .diagnostics-banner-secondary {
+            font-size: 11px;
+            opacity: 0.8;
+        }
+
+        .diagnostics-banner-btn {
+            padding: 4px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+            font-size: 12px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.2s;
+        }
+
+        .diagnostics-banner-btn:hover {
+            background: rgba(255, 255, 255, 0.25);
+        }
+
+        .diagnostics-banner-close {
+            width: 22px;
+            height: 22px;
+            border-radius: 6px;
+            border: none;
+            background: rgba(255, 255, 255, 0.12);
+            color: rgba(255, 255, 255, 0.7);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            flex-shrink: 0;
+            transition: background 0.2s;
+        }
+
+        .diagnostics-banner-close:hover {
+            background: rgba(255, 255, 255, 0.25);
+            color: #fff;
+        }
+
+        .model-health-status {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            z-index: 180;
+            display: none;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 12px;
+            background: rgba(24, 24, 28, 0.72);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #fff;
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            pointer-events: none;
+        }
+
+        .model-health-status.healthy {
+            border-color: rgba(90, 200, 120, 0.3);
+        }
+
+        .model-health-status.degraded {
+            border-color: rgba(255, 209, 102, 0.35);
+        }
+
+        .model-health-status.broken,
+        .model-health-status.unloadable {
+            border-color: rgba(255, 107, 107, 0.35);
+        }
+
+        .model-health-status-icon {
+            font-size: 15px;
+            flex-shrink: 0;
+        }
+
+        .model-health-status-text {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+        }
+
+        .model-health-status-primary {
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .model-health-status-secondary {
+            font-size: 10px;
+            opacity: 0.75;
+        }
+
+        [data-theme="light"] .model-health-status {
+            background: rgba(255, 255, 255, 0.86);
+            color: #1a1a1a;
+            border-color: rgba(0, 0, 0, 0.08);
+        }
+
+        /* Health state on diagnostics button */
+        #toggle-diagnostics-panel.health-degraded .tool-button-text {
+            color: #ffd166;
+        }
+
+        #toggle-diagnostics-panel.health-broken .tool-button-text {
+            color: #ff8f8f;
+        }
+
+        #toggle-diagnostics-panel.health-unloadable .tool-button-text {
+            color: #ff4a4a;
+        }
+
+        #toggle-diagnostics-panel.health-degraded,
+        #toggle-diagnostics-panel.health-broken,
+        #toggle-diagnostics-panel.health-unloadable {
+            position: relative;
+        }
+
+        #toggle-diagnostics-panel.health-degraded::after,
+        #toggle-diagnostics-panel.health-broken::after,
+        #toggle-diagnostics-panel.health-unloadable::after {
+            content: '';
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+        }
+
+        #toggle-diagnostics-panel.health-degraded::after {
+            background: #ffd166;
+        }
+
+        #toggle-diagnostics-panel.health-broken::after {
+            background: #ff8f8f;
+        }
+
+        #toggle-diagnostics-panel.health-unloadable::after {
+            background: #ff4a4a;
+        }
+
+        [data-theme="light"] .diagnostics-banner.error {
+            background: rgba(220, 50, 50, 0.9);
+        }
+
+        [data-theme="light"] .diagnostics-banner.warning {
+            background: rgba(200, 150, 30, 0.9);
         }
 
         .floating-panel-header {
@@ -2955,9 +3659,25 @@
                     <button class="tool-button" id="toggle-model-tree">
                         <span class="tool-button-text" data-i18n="structure"></span>
                     </button>
+                    <button class="tool-button" id="toggle-diagnostics-panel">
+                        <span class="tool-button-text" data-i18n="diagnostics"></span>
+                    </button>
+                    <button class="tool-button" id="toggle-review-panel">
+                        <span class="tool-button-text" data-i18n="review"></span>
+                    </button>
                     <button class="tool-button" id="open-editor-btn">
                         <span class="tool-button-text" data-i18n="edit"></span>
                     </button>
+                    <div class="tool-dropdown" id="review-snapshot-dropdown">
+                        <button class="tool-button" id="toggle-review-snapshot-menu" type="button" aria-haspopup="menu" aria-expanded="false">
+                            <span class="tool-button-text" data-i18n="snapshot"></span>
+                            <span class="tool-button-icon tool-dropdown-caret">▾</span>
+                        </button>
+                        <div class="tool-dropdown-menu" id="review-snapshot-menu" hidden>
+                            <button class="tool-dropdown-item" id="export-review-snapshot-btn" type="button" data-i18n="snapshotExport"></button>
+                            <button class="tool-dropdown-item" id="import-review-snapshot-btn" type="button" data-i18n="snapshotImport"></button>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="control-bar-divider"></div>
@@ -2974,6 +3694,15 @@
                     </button>
                 </div>
             </div>
+
+            <input
+                type="file"
+                id="import-review-snapshot-input"
+                accept=".json,application/json"
+                tabindex="-1"
+                aria-hidden="true"
+                style="position: fixed; left: -9999px; width: 1px; height: 1px; opacity: 0; pointer-events: none;"
+            >
 
             <div id="mujoco-simulation-bar" style="display:none;">
                 <button id="mujoco-reset-btn-bar">
@@ -3038,6 +3767,40 @@
                         </svg>
                         <div id="graph-empty-state" class="empty-state" data-i18n="noModel"></div>
                     </div>
+                </div>
+            </div>
+
+            <div id="floating-diagnostics-panel" class="floating-panel">
+                <div class="floating-panel-header">
+                    <span data-i18n="diagnosticsTitle"></span>
+                    <button class="panel-maximize-btn" data-panel-id="floating-diagnostics-panel">⛶</button>
+                    <button class="panel-close-btn" data-panel="floating-diagnostics-panel">✕</button>
+                </div>
+                <div class="floating-panel-content" id="diagnostics-panel-content">
+                    <div class="empty-state" data-i18n="noDiagnostics"></div>
+                </div>
+            </div>
+
+            <div id="floating-review-panel" class="floating-panel">
+                <div class="floating-panel-header">
+                    <span data-i18n="reviewPanelTitle"></span>
+                    <button class="panel-maximize-btn" data-panel-id="floating-review-panel">⛶</button>
+                    <button class="panel-close-btn" data-panel="floating-review-panel">✕</button>
+                </div>
+                <div class="floating-panel-content review-panel-content">
+                    <div id="review-current-target" class="review-current-target empty" data-i18n="reviewNoTargetSelected"></div>
+                    <div class="review-comment-composer">
+                        <textarea id="review-comment-input" class="review-comment-input" data-i18n="reviewCommentPlaceholder"></textarea>
+                        <div class="review-comment-actions">
+                            <div class="review-comment-count">
+                                <span data-i18n="reviewCommentCount"></span>: <span id="review-comment-count">0</span>
+                            </div>
+                            <button id="toggle-review-3d-selection-btn" type="button" class="review-comment-select-3d-btn" data-i18n="reviewSelectIn3D"></button>
+                            <button id="cancel-review-edit-btn" class="review-comment-cancel-btn" hidden data-i18n="reviewCancelEdit"></button>
+                            <button id="add-review-comment-btn" class="review-comment-add-btn" disabled data-i18n="reviewAddComment"></button>
+                        </div>
+                    </div>
+                    <div id="review-comments-list" class="review-comments-list"></div>
                 </div>
             </div>
 

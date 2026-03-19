@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<robot name="missing_texture_fixture">
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/base.stl"/>
+      </geometry>
+      <material name="body_material">
+        <texture filename="textures/body.png"/>
+      </material>
+    </visual>
+  </link>
+</robot>

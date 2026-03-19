@@ -1,3 +1,5 @@
+import { normalizePath } from '../utils/FileUtils.js';
+
 /**
  * FileTreeView - File tree view
  * Responsible for displaying and managing file tree structure
@@ -22,7 +24,8 @@ export class FileTreeView {
 
         listContainer.innerHTML = '';
 
-        if (files.length === 0) {
+        const hasVisibleFiles = fileMap instanceof Map ? fileMap.size > 0 : false;
+        if (!hasVisibleFiles) {
             this.showLoadButton(listContainer);
             return;
         }
@@ -136,7 +139,7 @@ export class FileTreeView {
         input.style.display = 'none';
 
         if (!isFolder) {
-            input.setAttribute('accept', '.urdf,.xacro,.xml,.dae,.stl,.obj,.collada,.usd,.usda,.usdc,.usdz');
+            input.setAttribute('accept', '.urdf,.xacro,.mjcf,.xml,.dae,.stl,.obj,.collada,.gltf,.glb,.usd,.usda,.usdc,.usdz');
         }
 
         input.addEventListener('change', (e) => {
@@ -195,18 +198,19 @@ export class FileTreeView {
      * Mark current active file
      */
     markActiveFile(file) {
-        document.querySelectorAll('.tree-item.selected').forEach(item => {
-            item.classList.remove('selected');
+        if (!file) {
+            return;
+        }
+
+        const matchingItem = Array.from(document.querySelectorAll('#model-list .tree-item.file')).find(item => {
+            const itemPath = normalizePath(item.dataset.filePath || '');
+            return itemPath.endsWith(`/${file.name}`) || itemPath === normalizePath(file.name);
         });
 
-        const allTreeItems = document.querySelectorAll('#model-list .tree-item');
-        allTreeItems.forEach(item => {
-            const nameSpan = item.querySelector('.name');
-            if (nameSpan && nameSpan.textContent === file.name) {
-                item.classList.add('selected');
-                item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            }
-        });
+        if (matchingItem) {
+            this.selectTreeItem(matchingItem);
+            matchingItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
     }
 
     /**
@@ -215,57 +219,18 @@ export class FileTreeView {
     expandAndScrollToFile(file, fileMap) {
         if (!file) return;
 
-        // Find file's full path in fileMap
-        let filePath = null;
-        fileMap.forEach((f, path) => {
-            if (f === file) {
+        let filePath = '';
+        fileMap?.forEach((candidateFile, path) => {
+            if (!filePath && candidateFile === file) {
                 filePath = path;
             }
         });
 
         if (!filePath) {
-            return;
+            filePath = file.webkitRelativePath || file.name;
         }
 
-        // Get all folders in path
-        const pathParts = filePath.split('/').filter(p => p);
-        const folderPaths = [];
-
-        // Build folder paths for each level
-        for (let i = 0; i < pathParts.length - 1; i++) {
-            folderPaths.push(pathParts[i]);
-        }
-
-
-        // Expand all parent folders
-        const allFolders = document.querySelectorAll('#model-list .tree-item.folder');
-        allFolders.forEach(folder => {
-            const nameSpan = folder.querySelector('.name');
-            if (nameSpan && folderPaths.includes(nameSpan.textContent)) {
-                folder.classList.remove('collapsed');
-            }
-        });
-
-        // Delay scrolling to ensure DOM is updated
-        setTimeout(() => {
-            const allTreeItems = document.querySelectorAll('#model-list .tree-item');
-            let targetItem = null;
-
-            allTreeItems.forEach(item => {
-                const nameSpan = item.querySelector('.name');
-                if (nameSpan && nameSpan.textContent === file.name) {
-                    const parent = item.parentElement;
-                    if (parent) {
-                        targetItem = item;
-                    }
-                }
-            });
-
-            if (targetItem) {
-                targetItem.classList.add('selected');
-                targetItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            }
-        }, 100);
+        this.selectFileByPath(filePath);
     }
 
     /**
@@ -283,19 +248,17 @@ export class FileTreeView {
      */
     buildFileTree(container, files, fileMap) {
         const fileStructure = {};
+        const loadableFileInfoByPath = new Map(
+            (Array.isArray(files) ? files : []).map(fileInfo => [normalizePath(fileInfo.path), fileInfo])
+        );
 
         fileMap.forEach((file, path) => {
-            const ext = file.name.split('.').pop().toLowerCase();
-            const supportedExtensions = ['urdf', 'xacro', 'xml', 'dae', 'stl', 'obj', 'collada', 'usd', 'usda', 'usdc'];
-
-            if (!supportedExtensions.includes(ext)) return;
-
-            // If XML file, check if it's a model file
-            if (ext === 'xml' && !this.isModelXML(file.name)) {
-                return;
-            }
-
-            const parts = path.split('/').filter(p => p);
+            const normalizedPath = normalizePath(path || file?.webkitRelativePath || file?.name || '');
+            const ext = (file?.name || normalizedPath).includes('.')
+                ? (file?.name || normalizedPath).split('.').pop().toLowerCase()
+                : '';
+            const loadableFileInfo = loadableFileInfoByPath.get(normalizedPath) || null;
+            const parts = normalizedPath.split('/').filter(p => p);
             let current = fileStructure;
 
             parts.forEach((part, index) => {
@@ -304,8 +267,10 @@ export class FileTreeView {
                     current.__files.push({
                         name: part,
                         file: file,
-                        path: path,
-                        ext: ext
+                        path: normalizedPath,
+                        ext,
+                        category: loadableFileInfo?.category || 'resource',
+                        type: loadableFileInfo?.type || 'resource'
                     });
                 } else {
                     if (!current[part]) current[part] = {};
@@ -314,13 +279,13 @@ export class FileTreeView {
             });
         });
 
-        this.renderFileTreeStructure(fileStructure, container);
+        this.renderFileTreeStructure(fileStructure, container, '');
     }
 
     /**
      * Render file tree structure
      */
-    renderFileTreeStructure(structure, container) {
+    renderFileTreeStructure(structure, container, parentPath = '') {
         const folders = [];
         const files = [];
 
@@ -333,9 +298,10 @@ export class FileTreeView {
         });
 
         folders.sort().forEach(folderName => {
-            const folder = this.createTreeFolder(folderName);
+            const folderPath = normalizePath(parentPath ? `${parentPath}/${folderName}` : folderName);
+            const folder = this.createTreeFolder(folderName, folderPath);
             const folderChildren = folder.querySelector('.tree-children');
-            this.renderFileTreeStructure(structure[folderName], folderChildren);
+            this.renderFileTreeStructure(structure[folderName], folderChildren, folderPath);
             container.appendChild(folder);
         });
 
@@ -347,9 +313,10 @@ export class FileTreeView {
     /**
      * Create folder node
      */
-    createTreeFolder(name) {
+    createTreeFolder(name, folderPath = '') {
         const folder = document.createElement('div');
         folder.className = 'tree-item folder collapsed';
+        folder.dataset.folderPath = folderPath;
 
         const header = document.createElement('div');
         header.className = 'tree-item-header';
@@ -391,23 +358,23 @@ export class FileTreeView {
      */
     renderFiles(files, container) {
         files.sort((a, b) => {
-            const modelExts = ['urdf', 'xacro', 'xml', 'usd', 'usda', 'usdc'];
-            const aIsModel = modelExts.includes(a.ext);
-            const bIsModel = modelExts.includes(b.ext);
-
-            if (aIsModel && !bIsModel) return -1;
-            if (!aIsModel && bIsModel) return 1;
+            const priority = {
+                model: 0,
+                mesh: 1,
+                resource: 2
+            };
+            const priorityDiff = (priority[a.category] ?? 99) - (priority[b.category] ?? 99);
+            if (priorityDiff !== 0) {
+                return priorityDiff;
+            }
             return a.name.localeCompare(b.name);
         });
 
         files.forEach(fileInfo => {
-            const item = this.createTreeItem(fileInfo.name, fileInfo.ext);
+            const item = this.createTreeItem(fileInfo);
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
-                document.querySelectorAll('.tree-item.selected').forEach(elem => {
-                    elem.classList.remove('selected');
-                });
-                item.classList.add('selected');
+                this.selectTreeItem(item);
                 this.onFileClick?.(fileInfo);
             });
             container.appendChild(item);
@@ -417,9 +384,12 @@ export class FileTreeView {
     /**
      * Create file node
      */
-    createTreeItem(name, ext) {
+    createTreeItem(fileInfo) {
+        const { name, ext, path, category } = fileInfo;
         const item = document.createElement('div');
-        item.className = 'tree-item';
+        item.className = 'tree-item file';
+        item.dataset.filePath = normalizePath(path || name || '');
+        item.dataset.fileCategory = category || 'resource';
 
         const header = document.createElement('div');
         header.className = 'tree-item-header';
@@ -439,20 +409,58 @@ export class FileTreeView {
         header.appendChild(leftContent);
 
         // Add type label (e.g., URDF, XACRO, STL, etc.)
-        if (name && name.includes('.')) {
-            const extUpper = name.split('.').pop().toUpperCase();
-            const displayExtensions = ['URDF', 'XACRO', 'XML', 'DAE', 'STL', 'OBJ', 'USD', 'USDA', 'USDC', 'USDZ'];
-            if (displayExtensions.includes(extUpper)) {
-                const badge = document.createElement('span');
-                badge.className = 'type-badge';
-                badge.textContent = extUpper;
+        if (ext) {
+            const badge = document.createElement('span');
+            badge.className = 'type-badge';
+            badge.textContent = ext.toUpperCase();
             header.appendChild(badge);
-            }
         }
 
         item.appendChild(header);
 
         return item;
+    }
+
+    selectTreeItem(item) {
+        document.querySelectorAll('.tree-item.selected').forEach(elem => {
+            elem.classList.remove('selected');
+        });
+
+        item?.classList.add('selected');
+    }
+
+    clearSelectedFile() {
+        document.querySelectorAll('#model-list .tree-item.selected').forEach(item => {
+            item.classList.remove('selected');
+        });
+    }
+
+    selectFileByPath(filePath, options = {}) {
+        const { scroll = true } = options;
+        const normalizedPath = normalizePath(filePath);
+        if (!normalizedPath) {
+            return false;
+        }
+
+        document.querySelectorAll('#model-list .tree-item.folder').forEach(folder => {
+            const folderPath = normalizePath(folder.dataset.folderPath || '');
+            if (folderPath && (normalizedPath === folderPath || normalizedPath.startsWith(`${folderPath}/`))) {
+                folder.classList.remove('collapsed');
+            }
+        });
+
+        const items = Array.from(document.querySelectorAll('#model-list .tree-item.file'));
+        const targetItem = items.find(item => normalizePath(item.dataset.filePath || '') === normalizedPath);
+        if (!targetItem) {
+            return false;
+        }
+
+        this.selectTreeItem(targetItem);
+        if (scroll) {
+            targetItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        return true;
     }
 }
 

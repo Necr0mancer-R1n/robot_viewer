@@ -11,6 +11,7 @@ export class UnifiedRobotModel {
         this.constraints = new Map(); // Map<name, Constraint> - for parallel mechanism constraints
         this.rootLink = null; // Root link name
         this.threeObject = null; // Three.js object (if available)
+        this.userData = {};
     }
 
     addLink(link) {
@@ -125,6 +126,7 @@ export class Joint {
         this.limits = null; // JointLimits
         this.currentValue = 0; // Current joint value
         this.threeObject = null; // Three.js object (if available)
+        this.userData = {};
     }
 }
 

@@ -286,6 +286,8 @@ export class UIController {
             'floating-files-panel': 'toggle-files-panel',
             'floating-joints-panel': 'toggle-joints-panel',
             'floating-model-tree': 'toggle-model-tree',
+            'floating-diagnostics-panel': 'toggle-diagnostics-panel',
+            'floating-review-panel': 'toggle-review-panel',
             'floating-help-panel': 'help-button'
         };
 
@@ -504,6 +506,92 @@ export class UIController {
         });
     }
 
+    setupReviewSnapshotControls() {
+        const dropdown = document.getElementById('review-snapshot-dropdown');
+        const triggerBtn = document.getElementById('toggle-review-snapshot-menu');
+        const menu = document.getElementById('review-snapshot-menu');
+        const exportBtn = document.getElementById('export-review-snapshot-btn');
+        const importBtn = document.getElementById('import-review-snapshot-btn');
+        const importInput = document.getElementById('import-review-snapshot-input');
+
+        const openImportPicker = () => {
+            if (!importInput) {
+                return;
+            }
+
+            importInput.value = '';
+
+            if (typeof importInput.showPicker === 'function') {
+                try {
+                    importInput.showPicker();
+                    return;
+                } catch (error) {
+                    console.warn('showPicker() failed for snapshot import, falling back to click().', error);
+                }
+            }
+
+            importInput.click();
+        };
+
+        const setMenuOpen = (open) => {
+            if (!dropdown || !triggerBtn || !menu) {
+                return;
+            }
+
+            dropdown.classList.toggle('open', open);
+            triggerBtn.classList.toggle('active', open);
+            triggerBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            menu.hidden = !open;
+        };
+
+        if (dropdown && triggerBtn && menu) {
+            dropdown.addEventListener('click', (event) => {
+                event.stopPropagation();
+            });
+
+            triggerBtn.addEventListener('click', (event) => {
+                event.stopPropagation();
+                setMenuOpen(!dropdown.classList.contains('open'));
+            });
+
+            document.addEventListener('click', () => {
+                setMenuOpen(false);
+            });
+
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    setMenuOpen(false);
+                }
+            });
+        }
+
+        if (exportBtn) {
+            exportBtn.addEventListener('click', (event) => {
+                event.stopPropagation();
+                setMenuOpen(false);
+                this.onExportReviewSnapshot?.();
+            });
+        }
+
+        if (importBtn && importInput) {
+            importBtn.addEventListener('click', (event) => {
+                event.stopPropagation();
+                openImportPicker();
+                setMenuOpen(false);
+            });
+
+            importInput.addEventListener('change', async (event) => {
+                const file = event.target.files?.[0];
+                if (!file) {
+                    return;
+                }
+
+                await this.onImportReviewSnapshot?.(file);
+                importInput.value = '';
+            });
+        }
+    }
+
     /**
      * Setup all buttons and panels
      */
@@ -514,6 +602,8 @@ export class UIController {
         this.onResetJoints = callbacks.onResetJoints;
         this.onMujocoReset = callbacks.onMujocoReset;
         this.onMujocoToggleSimulate = callbacks.onMujocoToggleSimulate;
+        this.onExportReviewSnapshot = callbacks.onExportReviewSnapshot;
+        this.onImportReviewSnapshot = callbacks.onImportReviewSnapshot;
 
         this.setupControlPanel();
         this.setupThemeToggle(callbacks.onThemeChanged);
@@ -523,6 +613,7 @@ export class UIController {
         this.setupJointAxesToggle();
         this.setupShadowToggle();
         this.setupLightingToggle();
+        this.setupReviewSnapshotControls();
     }
 
     /**

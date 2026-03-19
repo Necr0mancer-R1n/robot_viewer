@@ -66,6 +66,7 @@ export function getFileTypeFromExtension(ext) {
     const typeMap = {
         'urdf': 'urdf',
         'xacro': 'xacro',
+        'mjcf': 'mjcf',
         'xml': 'mjcf',
         'usd': 'usd',
         'usda': 'usd',
@@ -79,8 +80,8 @@ export function getFileTypeFromExtension(ext) {
  * Get file display type
  */
 export function getFileDisplayType(ext, fileName) {
-    const modelExts = ['urdf', 'xacro', 'xml', 'usd', 'usda', 'usdc', 'usdz'];
-    const meshExts = ['dae', 'stl', 'obj', 'collada'];
+    const modelExts = ['urdf', 'xacro', 'mjcf', 'xml', 'usd', 'usda', 'usdc', 'usdz'];
+    const meshExts = ['dae', 'stl', 'obj', 'collada', 'gltf', 'glb'];
 
     if (modelExts.includes(ext)) {
         return 'model';

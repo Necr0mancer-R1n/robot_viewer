@@ -3,15 +3,19 @@
  * Responsible for drawing and managing model tree structure graph
  */
 import * as d3 from 'd3';
+import { indexDiagnosticsByTarget } from '../utils/DiagnosticsUtils.js';
 
 export class ModelGraphView {
     constructor(sceneManager, measurementController = null) {
         this.sceneManager = sceneManager;
         this.measurementController = measurementController;
         this.codeEditorManager = null; // Code editor manager reference
+        this.diagnosticsView = null;
         this.currentZoom = null; // Save current zoom behavior
         this.currentSvg = null; // Save current SVG selector
         this.currentContainer = null; // Save current container
+        this.selectedTarget = null;
+        this.onSelectionChanged = null;
     }
 
     /**
@@ -24,6 +28,7 @@ export class ModelGraphView {
         svg.selectAll('*:not(defs)').remove();
 
         if (!model || !model.links || model.links.size === 0) {
+            this.selectedTarget = null;
             emptyState?.classList.remove('hidden');
             return;
         }
@@ -32,6 +37,12 @@ export class ModelGraphView {
 
         const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
         const isLightTheme = currentTheme === 'light';
+        const diagnosticsIndex = indexDiagnosticsByTarget(model);
+        const getDiagnosticColor = (diagnostics) => {
+            if (diagnostics.some(item => item.level === 'error')) return '#ff6b6b';
+            if (diagnostics.some(item => item.level === 'warning')) return '#fbbf24';
+            return '#4a9eff';
+        };
 
         const nodeColors = isLightTheme ? {
             bg: 'rgba(240, 240, 245, 0.95)',
@@ -45,6 +56,7 @@ export class ModelGraphView {
 
         const treeData = this.buildHierarchy(model.rootLink, model);
         if (!treeData) {
+            this.selectedTarget = null;
             emptyState?.classList.remove('hidden');
             return;
         }
@@ -101,6 +113,8 @@ export class ModelGraphView {
                 if (tagName === 'svg' || target === svg.node() ||
                     (tagName === 'g' && target.classList?.contains('zoom-container'))) {
                     this.clearAllSelections(svg);
+                    this.diagnosticsView?.clearSelectedDiagnostic();
+                    this.diagnosticsView?.focusTarget(null, null, false, true);
 
                     if (this.measurementController) {
                         this.measurementController.clearMeasurement();
@@ -133,6 +147,8 @@ export class ModelGraphView {
 
             if (isBlankArea) {
                 this.clearAllSelections(svg);
+                this.diagnosticsView?.clearSelectedDiagnostic();
+                this.diagnosticsView?.focusTarget(null, null, false, true);
 
                 if (this.measurementController) {
                     this.measurementController.clearMeasurement();
@@ -236,6 +252,18 @@ export class ModelGraphView {
                 .style('fill', 'none')
                 .style('stroke', 'transparent')
                 .style('stroke-width', '2');
+
+            const jointDiagnostics = diagnosticsIndex.joint.get(d.target.data.jointName) || [];
+            if (jointDiagnostics.length > 0) {
+                jointGroup.append('circle')
+                    .attr('class', 'joint-diagnostic-dot')
+                    .attr('cx', capsuleWidth / 2 - 4)
+                    .attr('cy', -capsuleHeight / 2 + 4)
+                    .attr('r', 5)
+                    .style('fill', getDiagnosticColor(jointDiagnostics))
+                    .style('stroke', nodeColors.bg)
+                    .style('stroke-width', '2');
+            }
         });
 
         // Joint click event
@@ -254,31 +282,10 @@ export class ModelGraphView {
                     this.measurementController.handleSelection(joint, event.currentTarget, 'joint');
                 }
             } else {
-                // Normal click: highlight joint + jump to code
-                if (this.measurementController) {
-                    this.measurementController.clearMeasurement();
-                }
-
-                // Clear all selection states
-                this.clearAllSelections(svg);
-
-                // Select current joint node
-                d3.select(event.currentTarget).classed('selected', true);
-                d3.select(event.currentTarget).select('.joint-capsule-border')
-                    .style('stroke', isLightTheme ? 'var(--accent)' : '#ff4a4a')
-                    .style('stroke-width', '3');
-                d3.select(event.currentTarget).select('.joint-capsule-bg')
-                    .style('fill', isLightTheme ? 'rgba(10, 132, 255, 0.15)' : '#3a3a3a');
-
-                if (this.sceneManager) {
-                    this.sceneManager.highlightManager.clearHighlight();
-                    this.sceneManager.axesManager.showOnlyJointAxis(joint);
-                }
-
-                // Jump to joint definition in code editor
-                if (this.codeEditorManager && d.target.data.jointName) {
-                    this.codeEditorManager.scrollToJoint(d.target.data.jointName);
-                }
+                this.selectTarget('joint', d.target.data.jointName, {
+                    syncEditor: true,
+                    scrollDiagnostics: true
+                });
             }
         });
 
@@ -354,6 +361,18 @@ export class ModelGraphView {
                 .style('fill', 'none')
                 .style('stroke', 'transparent')
                 .style('stroke-width', '3');
+
+            const linkDiagnostics = diagnosticsIndex.link.get(nodeGroup.datum().data.name) || [];
+            if (linkDiagnostics.length > 0) {
+                nodeGroup.append('circle')
+                    .attr('class', 'node-diagnostic-dot')
+                    .attr('cx', boxWidth / 2 - 6)
+                    .attr('cy', -boxHeight / 2 + 6)
+                    .attr('r', 6)
+                    .style('fill', getDiagnosticColor(linkDiagnostics))
+                    .style('stroke', nodeColors.bg)
+                    .style('stroke-width', '2');
+            }
         });
 
         node.on('click', (event, d) => {
@@ -365,31 +384,10 @@ export class ModelGraphView {
                     this.measurementController.handleSelection(d.data.data, event.currentTarget, 'link');
                 }
             } else {
-                // Normal click: highlight Link + jump to code
-                if (this.measurementController) {
-                    this.measurementController.clearMeasurement();
-                }
-
-                // Clear all selection states (including style reset)
-                this.clearAllSelections(svg);
-
-                // Select current node
-                d3.select(event.currentTarget).classed('selected', true);
-                d3.select(event.currentTarget).select('.node-border')
-                    .style('stroke', isLightTheme ? 'var(--accent)' : '#4a9eff')
-                    .style('stroke-width', '6');
-                d3.select(event.currentTarget).select('.node-bg')
-                    .style('fill', isLightTheme ? 'rgba(10, 132, 255, 0.15)' : '#3a3a3a');
-
-                if (d.data.data && this.sceneManager) {
-                    this.sceneManager.highlightManager.clearHighlight();
-                    this.sceneManager.highlightManager.highlightLink(d.data.data, this.sceneManager.currentModel);
-                }
-
-                // Jump to link definition in code editor
-                if (this.codeEditorManager && d.data.name) {
-                    this.codeEditorManager.scrollToLink(d.data.name);
-                }
+                this.selectTarget('link', d.data.name, {
+                    syncEditor: true,
+                    scrollDiagnostics: true
+                });
             }
         });
 
@@ -493,6 +491,8 @@ export class ModelGraphView {
 
                 // Clear all selection states
                 this.clearAllSelections(svg);
+                this.diagnosticsView?.clearSelectedDiagnostic();
+                this.diagnosticsView?.focusTarget(null, null, false, true);
 
                 // Select ground node
                 d3.select(event.currentTarget).classed('selected', true);
@@ -564,6 +564,14 @@ export class ModelGraphView {
                         }
                     }
                 }
+            });
+        }
+
+        if (this.selectedTarget) {
+            this.selectTarget(this.selectedTarget.targetType, this.selectedTarget.targetName, {
+                syncDiagnostics: false,
+                syncEditor: false,
+                clearMeasurement: false
             });
         }
 
@@ -653,6 +661,8 @@ export class ModelGraphView {
 
                 // Clear all selection states (including style reset)
                 this.clearAllSelections(svg);
+                this.diagnosticsView?.clearSelectedDiagnostic();
+                this.diagnosticsView?.focusTarget(null, null, false, true);
 
                 // Clear measurement state
                 if (this.measurementController) {
@@ -679,6 +689,7 @@ export class ModelGraphView {
         const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
         const isLightTheme = currentTheme === 'light';
         const defaultBg = isLightTheme ? 'rgba(255, 255, 255, 0.95)' : 'rgba(42, 42, 46, 0.95)';
+        this.selectedTarget = null;
 
         // Clear all link node selection states
         svg.selectAll('.graph-node').classed('selected', false);
@@ -697,6 +708,100 @@ export class ModelGraphView {
         // Clear all measurement selection states
         svg.selectAll('.graph-node').classed('measurement-selected', false);
         svg.selectAll('.graph-joint-group').classed('measurement-selected', false);
+        this.onSelectionChanged?.();
+    }
+
+    getSelectedTarget() {
+        return this.selectedTarget ? { ...this.selectedTarget } : null;
+    }
+
+    selectTarget(targetType, targetName, options = {}) {
+        if (!targetType || !targetName || !this.currentSvg || !this.sceneManager?.currentModel) {
+            return false;
+        }
+
+        const {
+            syncScene = true,
+            syncDiagnostics = true,
+            syncEditor = false,
+            clearMeasurement = true,
+            scrollDiagnostics = false
+        } = options;
+
+        const svg = this.currentSvg;
+        const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+        const isLightTheme = currentTheme === 'light';
+
+        if (clearMeasurement && this.measurementController) {
+            this.measurementController.clearMeasurement();
+        }
+
+        this.clearAllSelections(svg);
+
+        if (targetType === 'link') {
+            const nodeSelection = svg.selectAll('.graph-node')
+                .filter(d => d?.data?.name === targetName);
+            const node = nodeSelection.node();
+            const link = this.sceneManager.currentModel.links?.get(targetName);
+
+            if (!node || !link) {
+                return false;
+            }
+
+            nodeSelection.classed('selected', true);
+            nodeSelection.select('.node-border')
+                .style('stroke', isLightTheme ? 'var(--accent)' : '#4a9eff')
+                .style('stroke-width', '6');
+            nodeSelection.select('.node-bg')
+                .style('fill', isLightTheme ? 'rgba(10, 132, 255, 0.15)' : '#3a3a3a');
+
+            if (syncScene) {
+                this.sceneManager.highlightManager.clearHighlight();
+                this.sceneManager.highlightManager.highlightLink(link, this.sceneManager.currentModel);
+            }
+        } else if (targetType === 'joint') {
+            const jointSelection = svg.selectAll('.graph-joint-group')
+                .filter(d => d?.target?.data?.jointName === targetName);
+            const jointNode = jointSelection.node();
+            const joint = this.sceneManager.currentModel.joints?.get(targetName);
+
+            if (!jointNode || !joint) {
+                return false;
+            }
+
+            jointSelection.classed('selected', true);
+            jointSelection.select('.joint-capsule-border')
+                .style('stroke', isLightTheme ? 'var(--accent)' : '#ff4a4a')
+                .style('stroke-width', '3');
+            jointSelection.select('.joint-capsule-bg')
+                .style('fill', isLightTheme ? 'rgba(10, 132, 255, 0.15)' : '#3a3a3a');
+
+            if (syncScene) {
+                this.sceneManager.highlightManager.clearHighlight();
+                this.sceneManager.axesManager.showOnlyJointAxis(joint);
+                this.sceneManager.redraw();
+            }
+        } else {
+            return false;
+        }
+
+        this.selectedTarget = { targetType, targetName };
+        this.onSelectionChanged?.();
+
+        if (syncDiagnostics) {
+            this.diagnosticsView?.clearSelectedDiagnostic();
+            this.diagnosticsView?.focusTarget(targetType, targetName, scrollDiagnostics, true);
+        }
+
+        if (syncEditor && this.codeEditorManager) {
+            if (targetType === 'link') {
+                this.codeEditorManager.scrollToLink(targetName);
+            } else if (targetType === 'joint') {
+                this.codeEditorManager.scrollToJoint(targetName);
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -711,6 +816,10 @@ export class ModelGraphView {
      */
     setCodeEditorManager(manager) {
         this.codeEditorManager = manager;
+    }
+
+    setDiagnosticsView(view) {
+        this.diagnosticsView = view;
     }
 
     /**

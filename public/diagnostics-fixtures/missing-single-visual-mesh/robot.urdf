@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<robot name="missing_visual_mesh_fixture">
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/base_missing.stl"/>
+      </geometry>
+    </visual>
+  </link>
+</robot>

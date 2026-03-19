@@ -22,6 +22,8 @@
  */
 import { XacroParser } from 'xacro-parser';
 import { URDFAdapter } from './URDFAdapter.js';
+import { addDiagnostic, addDiagnostics, addRuntimeDiagnostic, createDiagnostic, createMissingResourceDiagnostic, extractURDFResourceReferences, getSuggestedResourceCandidates, matchResourceReference, upsertResourceSummaryDiagnostic } from '../utils/DiagnosticsUtils.js';
+import { annotateXacroContent, applyXacroSourceMapToModel, extractXacroSourceMap, findXacroIncludeSourceInfo, stripXacroTraceAttributes } from '../utils/XacroTraceUtils.js';
 
 export class XacroAdapter {
     /**
@@ -36,6 +38,8 @@ export class XacroAdapter {
         try {
             // Create xacro parser
             const parser = new XacroParser();
+            const sourceFiles = new Map();
+            sourceFiles.set(fileName, xacroContent);
 
             // Configure parser for ROS Jade and later (default settings)
             parser.inOrder = true;
@@ -50,6 +54,7 @@ export class XacroAdapter {
 
             // Inject Python-style boolean constants as xacro properties
             // Some xacro files use True/False (capitalized) in conditions
+            xacroContent = annotateXacroContent(xacroContent, fileName);
             xacroContent = this.injectBooleanConstants(xacroContent);
 
             // Extract and set xacro arguments with their default values
@@ -69,7 +74,7 @@ export class XacroAdapter {
             // If fileMap provided, setup custom file loader
             if (fileMap) {
                 parser.getFileContents = async (path) => {
-                    return await this.loadFileFromMap(path, fileMap, workingPath);
+                    return await this.loadFileFromMap(path, fileMap, workingPath, sourceFiles);
                 };
             }
 
@@ -110,8 +115,9 @@ export class XacroAdapter {
             // Clean up empty text nodes and comments that might cause issues
             this.cleanXMLNodes(cleanUrdfXML.documentElement);
 
-            // Convert the clean XMLDocument back to string for URDFLoader
-            const finalUrdfString = serializer.serializeToString(cleanUrdfXML);
+            const tracedUrdfString = serializer.serializeToString(cleanUrdfXML);
+            const xacroSourceMap = extractXacroSourceMap(tracedUrdfString);
+            const finalUrdfString = stripXacroTraceAttributes(tracedUrdfString);
 
             // Now use existing URDF loading infrastructure
             // Import URDFLoader dynamically
@@ -120,10 +126,66 @@ export class XacroAdapter {
 
             return new Promise((resolve, reject) => {
                 const loader = new URDFLoader();
+                const resourceDiagnostics = [];
+                const missingResourceKeys = new Set();
+                const resourceReferences = extractURDFResourceReferences(tracedUrdfString);
+                let currentModel = null;
+                let refreshScheduled = false;
                 loader.parseCollision = true;
+
+                const refreshDiagnosticsUI = () => {
+                    if (refreshScheduled) {
+                        return;
+                    }
+
+                    refreshScheduled = true;
+                    requestAnimationFrame(() => {
+                        refreshScheduled = false;
+
+                        if (typeof window === 'undefined' || !window.app || window.app.currentModel !== currentModel) {
+                            return;
+                        }
+
+                        window.app.diagnosticsView?.render(currentModel, window.app.fileHandler?.getCurrentModelFile());
+                        window.app.modelGraphView?.drawModelGraph(currentModel);
+                        window.app.jointControlsUI?.setupJointControls(currentModel);
+                    });
+                };
 
                 // Extract directory where URDF file is located
                 const urdfDir = workingPath;
+                const buildMissingResourceDiagnostic = (path, candidates = []) => {
+                    const reference = matchResourceReference(path, resourceReferences);
+                    const suggestedCandidates = getSuggestedResourceCandidates(path, fileMap, candidates);
+
+                    return createMissingResourceDiagnostic({
+                        source: 'xacro',
+                        filePath: fileName,
+                        path,
+                        candidates: suggestedCandidates,
+                        reference
+                    });
+                };
+
+                const reportMissingResource = (path, candidates = []) => {
+                    if (!path) return;
+
+                    const key = `${path}|${candidates.join('|')}`;
+                    if (missingResourceKeys.has(key)) {
+                        return;
+                    }
+
+                    missingResourceKeys.add(key);
+                    const diagnostic = buildMissingResourceDiagnostic(path, candidates);
+
+                    if (currentModel) {
+                        addDiagnostic(currentModel, diagnostic);
+                        upsertResourceSummaryDiagnostic(currentModel);
+                        refreshDiagnosticsUI();
+                    } else {
+                        resourceDiagnostics.push(diagnostic);
+                    }
+                };
 
                 // If file map provided, setup resource loader (same as URDF loading)
                 if (fileMap) {
@@ -222,18 +284,30 @@ export class XacroAdapter {
 
                         if (!matchedFile) {
                             const targetFileName = normalizedPath.split('/').pop() || meshPath.split('/').pop();
+                            const candidates = [];
                             for (const [key, file] of fileMap.entries()) {
                                 const keyFileName = key.split('/').pop();
                                 if (keyFileName === targetFileName) {
                                     matchedFile = file;
                                     break;
                                 }
+                                if (targetFileName && candidates.length < 5 && keyFileName?.includes(targetFileName)) {
+                                    candidates.push(key);
+                                }
+                            }
+
+                            if (!matchedFile && (isTextureFile || isMeshFile)) {
+                                reportMissingResource(url, candidates);
                             }
                         }
 
                         if (matchedFile) {
                             const bloburl = URL.createObjectURL(matchedFile);
                             return bloburl;
+                        }
+
+                        if (isTextureFile || isMeshFile) {
+                            reportMissingResource(url);
                         }
 
                         return url;
@@ -258,6 +332,7 @@ export class XacroAdapter {
                                     done(null, err);
                                 });
                             } else {
+                                reportMissingResource(path);
                                 originalLoadMeshCb(path, manager, done);
                             }
                         }).catch(error => {
@@ -277,6 +352,12 @@ export class XacroAdapter {
                     // Convert to unified model using URDFAdapter
                     try {
                         const model = URDFAdapter.convert(robot, finalUrdfString);
+                        applyXacroSourceMapToModel(model, xacroSourceMap);
+                        model.userData.sourceFiles = sourceFiles;
+                        currentModel = model;
+                        addDiagnostics(model, resourceDiagnostics);
+                        model.userData.generatedURDF = finalUrdfString;
+                        model.userData.sourceXacro = fileName;
                         resolve(model);
                     } catch (error) {
                         console.error('[XacroAdapter] URDF conversion error:', error);
@@ -301,7 +382,7 @@ export class XacroAdapter {
      * @param {string} workingPath - Working directory
      * @returns {Promise<string>}
      */
-    static async loadFileFromMap(path, fileMap, workingPath) {
+    static async loadFileFromMap(path, fileMap, workingPath, sourceFiles = new Map()) {
         // Clean path - remove leading slash if present
         let cleanPath = path;
         if (cleanPath.startsWith('/')) {
@@ -326,7 +407,8 @@ export class XacroAdapter {
             const file = fileMap.get(tryPath);
             if (file) {
                 const content = await file.text();
-                return content;
+                sourceFiles.set(tryPath, content);
+                return this.injectBooleanConstants(annotateXacroContent(content, tryPath));
             }
         }
 
@@ -336,11 +418,24 @@ export class XacroAdapter {
             const keyFileName = key.split('/').pop();
             if (keyFileName === fileName) {
                 const content = await file.text();
-                return content;
+                sourceFiles.set(key, content);
+                return this.injectBooleanConstants(annotateXacroContent(content, key));
             }
         }
 
         console.error('[XacroAdapter] Cannot find included file:', path);
+        const includeSource = findXacroIncludeSourceInfo(path, sourceFiles);
+        addRuntimeDiagnostic(createDiagnostic({
+            level: 'error',
+            code: 'xacro/include-missing',
+            source: 'xacro',
+            message: `Cannot find included file: ${path}`,
+            filePath: includeSource?.filePath || workingPath,
+            metadata: {
+                lineNumber: includeSource?.lineNumber || null,
+                searchText: includeSource?.searchText || path
+            }
+        }));
         throw new Error(`Cannot find included file: ${path}`);
     }
 

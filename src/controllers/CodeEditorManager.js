@@ -549,5 +549,61 @@ export class CodeEditorManager {
 
         return found;
     }
+
+    scrollToDiagnostic(diagnostic) {
+        if (!this.codeEditorInstance || !diagnostic) {
+            return false;
+        }
+
+        const editorPanel = document.getElementById('code-editor-panel');
+        const openEditorBtn = document.getElementById('open-editor-btn');
+        if (editorPanel && !editorPanel.classList.contains('visible')) {
+            editorPanel.classList.add('visible');
+            if (openEditorBtn) {
+                openEditorBtn.classList.add('active');
+            }
+        }
+
+        const openInCurrentEditor = () => {
+            const lineNumber = diagnostic.metadata?.lineNumber;
+            const searchText = diagnostic.metadata?.searchText;
+            let found = this.codeEditorInstance.scrollToLineOrSearch(lineNumber, searchText);
+
+            if (!found && diagnostic.targetType === 'link' && diagnostic.targetName) {
+                found = this.scrollToLink(diagnostic.targetName);
+            }
+
+            if (!found && diagnostic.targetType === 'joint' && diagnostic.targetName) {
+                found = this.scrollToJoint(diagnostic.targetName);
+            }
+
+            return found;
+        };
+
+        const targetFilePath = diagnostic.filePath;
+        if (targetFilePath && this.fileMap && this.editorState.currentFile) {
+            const currentFile = this.editorState.currentFile;
+            let currentFilePath = currentFile.name;
+
+            for (const [key, value] of this.fileMap.entries()) {
+                if (value === currentFile) {
+                    currentFilePath = key;
+                    break;
+                }
+            }
+
+            if (currentFilePath !== targetFilePath) {
+                const targetFile = this.fileMap.get(targetFilePath);
+                if (targetFile) {
+                    this.loadFile(targetFile).then(() => {
+                        openInCurrentEditor();
+                    });
+                    return true;
+                }
+            }
+        }
+
+        return openInCurrentEditor();
+    }
 }
 

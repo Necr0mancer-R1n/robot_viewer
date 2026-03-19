@@ -11,11 +11,17 @@ import { JointControlsUI } from './ui/JointControlsUI.js';
 import { PanelManager } from './ui/PanelManager.js';
 import { ModelGraphView } from './views/ModelGraphView.js';
 import { FileTreeView } from './views/FileTreeView.js';
+import { DiagnosticsView } from './views/DiagnosticsView.js';
+import { ReviewPanelView } from './views/ReviewPanelView.js';
 import { CodeEditorManager } from './controllers/CodeEditorManager.js';
 import { MeasurementController } from './controllers/MeasurementController.js';
 import { USDViewerManager } from './renderer/USDViewerManager.js';
 import { MujocoSimulationManager } from './renderer/MujocoSimulationManager.js';
+import { ModelLoaderFactory } from './loaders/ModelLoaderFactory.js';
 import { i18n } from './utils/i18n.js';
+import { normalizePath } from './utils/FileUtils.js';
+import { DIAGNOSTICS_FIXTURES, loadDiagnosticsFixture, runAllDiagnosticsFixtures, runDiagnosticsFixture } from './fixtures/DiagnosticsFixtures.js';
+import { createReviewSnapshot, parseReviewSnapshot, stringifyReviewSnapshot } from './review/ReviewSnapshot.mjs';
 
 // Expose d3 globally for PanelManager
 window.d3 = d3;
@@ -33,6 +39,8 @@ class App {
         this.panelManager = null;
         this.modelGraphView = null;
         this.fileTreeView = null;
+        this.diagnosticsView = null;
+        this.reviewPanelView = null;
         this.codeEditorManager = null;
         this.measurementController = null;
         this.usdViewerManager = null;
@@ -42,6 +50,11 @@ class App {
         this.currentMJCFModel = null;
         this.angleUnit = 'rad';
         this.vscodeFileMap = new Map(); // Store VSCode files
+        this.reviewComments = [];
+        this.reviewDirectSelection = null;
+        this.review3DSelectionEnabled = false;
+        this.snapshotToastTimer = null;
+        this.snapshotReportTimer = null;
     }
 
     /**
@@ -98,7 +111,7 @@ class App {
         if (['urdf', 'xacro'].includes(ext)) return 'urdf';
         if (['mjcf', 'xml'].includes(ext)) return 'mjcf';
         if (['usd', 'usda', 'usdc', 'usdz'].includes(ext)) return 'usd';
-        if (['obj', 'stl', 'dae', 'gltf', 'glb'].includes(ext)) return 'mesh';
+        if (['obj', 'stl', 'dae', 'collada', 'gltf', 'glb'].includes(ext)) return 'mesh';
         return 'unknown';
     }
 
@@ -142,11 +155,29 @@ class App {
                 this.handleModelLoaded(model, file, isMesh, snapshot);
             };
 
+            this.fileHandler.onLoadError = () => {
+                if (this.diagnosticsView) {
+                    this.diagnosticsView.render(this.currentModel, this.fileHandler?.getCurrentModelFile());
+                }
+            };
+
             // Initialize joint controls UI
             this.jointControlsUI = new JointControlsUI(this.sceneManager);
 
             // Initialize model graph view
             this.modelGraphView = new ModelGraphView(this.sceneManager);
+
+            // Initialize diagnostics view
+            this.diagnosticsView = new DiagnosticsView(this.sceneManager);
+
+            // Initialize review panel view
+            this.reviewPanelView = new ReviewPanelView();
+            this.reviewPanelView.init();
+            this.reviewPanelView.onAddComment = (body, anchor) => this.addReviewComment(body, anchor);
+            this.reviewPanelView.onSelectComment = (comment) => this.focusReviewComment(comment);
+            this.reviewPanelView.onUpdateComment = (commentId, body) => this.updateReviewComment(commentId, body);
+            this.reviewPanelView.onDeleteComment = (comment) => this.deleteReviewComment(comment?.id);
+            this.reviewPanelView.onToggle3DSelection = () => this.toggleReview3DSelection();
 
             // Initialize file tree view
             this.fileTreeView = new FileTreeView();
@@ -175,7 +206,9 @@ class App {
                 onLanguageChanged: (lang) => this.handleLanguageChanged(lang),
                 onResetJoints: () => this.handleResetJoints(),
                 onMujocoReset: () => this.handleMujocoReset(),
-                onMujocoToggleSimulate: () => this.handleMujocoToggleSimulate()
+                onMujocoToggleSimulate: () => this.handleMujocoToggleSimulate(),
+                onExportReviewSnapshot: () => this.handleExportReviewSnapshot(),
+                onImportReviewSnapshot: (file) => this.handleImportReviewSnapshot(file)
             });
 
             // Set measurement update callback
@@ -195,12 +228,37 @@ class App {
             // Set code editor manager to joint controls UI
             if (this.jointControlsUI) {
                 this.jointControlsUI.setCodeEditorManager(this.codeEditorManager);
+                this.jointControlsUI.setDiagnosticsView(this.diagnosticsView);
             }
 
             // Set code editor manager to model graph view
             if (this.modelGraphView) {
                 this.modelGraphView.setCodeEditorManager(this.codeEditorManager);
+                this.modelGraphView.setDiagnosticsView(this.diagnosticsView);
+                this.modelGraphView.onSelectionChanged = () => {
+                    if (this.modelGraphView?.getSelectedTarget()) {
+                        this.reviewDirectSelection = null;
+                        this.fileTreeView?.clearSelectedFile?.();
+                    }
+                    this.renderReviewPanel();
+                };
             }
+
+            if (this.diagnosticsView) {
+                this.diagnosticsView.setCodeEditorManager(this.codeEditorManager);
+                this.diagnosticsView.onSelectionChanged = () => {
+                    const hasDiagnosticSelection = Boolean(this.diagnosticsView?.getSelectedDiagnosticAnchor());
+                    const hasFocusedTarget = Boolean(this.diagnosticsView?.getSnapshotState()?.focusedTarget);
+                    if (hasDiagnosticSelection || hasFocusedTarget) {
+                        this.reviewDirectSelection = null;
+                        this.fileTreeView?.clearSelectedFile?.();
+                    }
+                    this.renderReviewPanel();
+                };
+                this.diagnosticsView.render();
+            }
+
+            this.renderReviewPanel();
 
             this.codeEditorManager.onReload = async (file, skipTreeUpdate = false) => {
                 // Set flag when saving/reloading to avoid updating file tree
@@ -263,6 +321,10 @@ class App {
 
             // Update editor button visibility
             this.updateEditorButtonVisibility();
+
+            if (this.diagnosticsView) {
+                this.diagnosticsView.render(this.currentModel, this.fileHandler?.getCurrentModelFile());
+            }
 
             // Start render loop
             this.animate();
@@ -366,12 +428,17 @@ class App {
             this.currentModel = model;
             this.updateModelInfo(model, file);
 
+            if (this.diagnosticsView) {
+                this.diagnosticsView.render(model, file);
+            }
+
             // Hide snapshot if exists
             const snapshot = document.getElementById('canvas-snapshot');
             if (snapshot?.parentNode) {
                 snapshot.parentNode.removeChild(snapshot);
             }
 
+            this.renderReviewPanel();
             return;
         }
 
@@ -575,6 +642,12 @@ class App {
 
         // Update model info
         this.updateModelInfo(model, file);
+
+        if (this.diagnosticsView) {
+            this.diagnosticsView.render(model, file);
+        }
+
+        this.renderReviewPanel();
     }
 
     /**
@@ -625,19 +698,13 @@ class App {
                     return obj.isMesh && obj.visible;
                 });
 
-                if (modelIntersects.length === 0) {
-                    this.sceneManager.highlightManager.clearHighlight();
-
-                    // Clear selection in graph
-                    if (this.modelGraphView) {
-                        const svg = d3.select('#model-graph-svg');
-                        this.modelGraphView.clearAllSelections(svg);
+                if (this.review3DSelectionEnabled && modelIntersects.length > 0) {
+                    const selectionResult = this.selectReviewTargetFromSceneObject(modelIntersects[0].object);
+                    if (!selectionResult) {
+                        this.showSnapshotToast(window.i18n?.t('review3DSelectionUnavailable') || 'Could not resolve a review target from this object.', 'warning');
                     }
-
-                    // Clear measurement state
-                    if (this.measurementController) {
-                        this.measurementController.clearMeasurement();
-                    }
+                } else if (modelIntersects.length === 0) {
+                    this.clearReviewSelection();
                 }
             }
 
@@ -666,22 +733,1000 @@ class App {
                     target.classList?.contains('graph-controls-hint') ||
                     target.classList?.contains('empty-state') ||
                     target.id === 'floating-model-tree') {
-
-                    if (this.modelGraphView) {
-                        const svg = d3.select('#model-graph-svg');
-                        this.modelGraphView.clearAllSelections(svg);
-                    }
-
-                    if (this.measurementController) {
-                        this.measurementController.clearMeasurement();
-                    }
-
-                    if (this.sceneManager) {
-                        this.sceneManager.highlightManager.clearHighlight();
-                    }
+                    this.clearReviewSelection();
                 }
             });
         }
+    }
+
+    clearReviewSelection(options = {}) {
+        const { clearDiagnosticsFocus = true } = options;
+        this.reviewDirectSelection = null;
+        this.fileTreeView?.clearSelectedFile?.();
+
+        if (this.modelGraphView?.currentSvg) {
+            this.modelGraphView.clearAllSelections(this.modelGraphView.currentSvg);
+        }
+
+        if (this.measurementController) {
+            this.measurementController.clearMeasurement();
+        }
+
+        if (this.sceneManager) {
+            this.sceneManager.highlightManager.clearHighlight();
+            this.sceneManager.axesManager.restoreAllJointAxes();
+        }
+
+        if (this.diagnosticsView) {
+            this.diagnosticsView.clearSelectedDiagnostic();
+            if (clearDiagnosticsFocus) {
+                this.diagnosticsView.focusTarget(null, null, false, true);
+            }
+        }
+
+        this.renderReviewPanel();
+    }
+
+    setReview3DSelectionEnabled(enabled) {
+        this.review3DSelectionEnabled = Boolean(enabled);
+        this.reviewPanelView?.set3DSelectionEnabled(this.review3DSelectionEnabled);
+        return this.review3DSelectionEnabled;
+    }
+
+    toggleReview3DSelection() {
+        const enabled = this.setReview3DSelectionEnabled(!this.review3DSelectionEnabled);
+        const message = enabled
+            ? (window.i18n?.t('review3DSelectionEnabled') || '3D part selection for review is enabled.')
+            : (window.i18n?.t('review3DSelectionDisabled') || '3D part selection for review is disabled.');
+        this.showSnapshotToast(message, enabled ? 'info' : 'warning');
+        return enabled;
+    }
+
+    buildReviewResourceAnchor(fileInfo) {
+        if (!fileInfo) {
+            return null;
+        }
+
+        const filePath = normalizePath(fileInfo.path || fileInfo.file?.webkitRelativePath || fileInfo.file?.name || fileInfo.name || '');
+        const fileName = fileInfo.name || fileInfo.file?.name || filePath.split('/').pop() || '';
+        const extension = (fileInfo.ext || fileName.split('.').pop() || '').toLowerCase();
+
+        if (!filePath && !fileName) {
+            return null;
+        }
+
+        return {
+            kind: 'resource',
+            filePath,
+            fileName,
+            extension
+        };
+    }
+
+    resolveReviewFileInfo(resourceAnchor) {
+        const fileMap = this.fileHandler?.getFileMap?.();
+        if (!(fileMap instanceof Map) || fileMap.size === 0) {
+            return null;
+        }
+
+        const targetPath = normalizePath(resourceAnchor?.filePath || '');
+        const targetFileName = resourceAnchor?.fileName || '';
+        let matchedPath = '';
+        let matchedFile = null;
+
+        for (const [path, file] of fileMap.entries()) {
+            const normalizedCandidatePath = normalizePath(path || file?.webkitRelativePath || file?.name || '');
+            if (targetPath && normalizedCandidatePath === targetPath) {
+                matchedPath = normalizedCandidatePath;
+                matchedFile = file;
+                break;
+            }
+
+            if (!targetPath && targetFileName && file?.name === targetFileName) {
+                matchedPath = normalizedCandidatePath || normalizePath(targetFileName);
+                matchedFile = file;
+                break;
+            }
+        }
+
+        if (!matchedFile) {
+            return null;
+        }
+
+        const loadableFileInfo = (this.fileHandler?.getAvailableModels?.() || []).find(fileInfo => {
+            return fileInfo.file === matchedFile || normalizePath(fileInfo.path) === matchedPath;
+        }) || null;
+
+        const fileName = matchedFile.name || targetFileName || matchedPath.split('/').pop() || '';
+        const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+
+        return {
+            file: matchedFile,
+            name: fileName,
+            path: matchedPath || normalizePath(fileName),
+            ext,
+            category: loadableFileInfo?.category || 'resource',
+            type: loadableFileInfo?.type || 'resource'
+        };
+    }
+
+    focusReviewResource(resourceAnchor, options = {}) {
+        const { loadFile = true, scroll = true } = options;
+        const fileInfo = this.resolveReviewFileInfo(resourceAnchor);
+        if (!fileInfo) {
+            return false;
+        }
+
+        const normalizedAnchor = this.buildReviewResourceAnchor(fileInfo);
+        if (!normalizedAnchor) {
+            return false;
+        }
+
+        this.fileTreeView?.selectFileByPath(normalizedAnchor.filePath, { scroll });
+        this.reviewDirectSelection = this.cloneReviewAnchor(normalizedAnchor);
+        this.renderReviewPanel();
+
+        if (!loadFile) {
+            return true;
+        }
+
+        if (fileInfo.category === 'model') {
+            this.fileHandler.loadFile(fileInfo.file);
+
+            const editorPanel = document.getElementById('code-editor-panel');
+            if (editorPanel && editorPanel.classList.contains('visible') && this.codeEditorManager) {
+                this.codeEditorManager.loadFile(fileInfo.file);
+            }
+        } else if (fileInfo.category === 'mesh') {
+            this.fileHandler.loadMeshAsModel(fileInfo.file, fileInfo.name);
+        }
+
+        return true;
+    }
+
+    selectReviewAnchor(anchor, options = {}) {
+        const normalizedAnchor = this.cloneReviewAnchor(anchor);
+        if (!normalizedAnchor) {
+            return false;
+        }
+
+        this.setReview3DSelectionEnabled(false);
+
+        if (normalizedAnchor.kind === 'resource') {
+            this.clearReviewSelection();
+            return this.focusReviewResource(normalizedAnchor, {
+                loadFile: options.loadFile !== false,
+                scroll: options.scroll !== false
+            });
+        }
+
+        this.reviewDirectSelection = null;
+        this.fileTreeView?.clearSelectedFile?.();
+
+        if (normalizedAnchor.kind === 'diagnostic') {
+            const restored = this.diagnosticsView?.selectDiagnosticByAnchor(normalizedAnchor.anchor, { scroll: true });
+            if (restored) {
+                this.renderReviewPanel();
+            }
+            return Boolean(restored);
+        }
+
+        if (normalizedAnchor.kind === 'link' || normalizedAnchor.kind === 'joint') {
+            const restored = this.modelGraphView?.selectTarget(normalizedAnchor.kind, normalizedAnchor.targetName, {
+                syncScene: options.syncScene !== false,
+                syncDiagnostics: options.syncDiagnostics !== false,
+                syncEditor: Boolean(options.syncEditor),
+                clearMeasurement: options.clearMeasurement !== false,
+                scrollDiagnostics: Boolean(options.scrollDiagnostics)
+            });
+            if (restored) {
+                this.renderReviewPanel();
+            }
+            return Boolean(restored);
+        }
+
+        return false;
+    }
+
+    findLinkBySceneObject(sceneObject) {
+        if (!sceneObject || !this.currentModel?.links) {
+            return null;
+        }
+
+        let current = sceneObject;
+        while (current) {
+            const explicitLinkName = current.userData?.reviewLinkName;
+            if (explicitLinkName && this.currentModel.links.has(explicitLinkName)) {
+                return this.currentModel.links.get(explicitLinkName);
+            }
+
+            if (current.name && this.currentModel.links.has(current.name)) {
+                return this.currentModel.links.get(current.name);
+            }
+
+            current = current.parent;
+        }
+
+        for (const link of this.currentModel.links.values()) {
+            let probe = sceneObject;
+            while (probe) {
+                if (probe === link.threeObject) {
+                    return link;
+                }
+                probe = probe.parent;
+            }
+        }
+
+        return null;
+    }
+
+    findJointBySceneObject(sceneObject) {
+        if (!sceneObject || !this.currentModel?.joints) {
+            return null;
+        }
+
+        let current = sceneObject;
+        while (current) {
+            if (current.name && this.currentModel.joints.has(current.name)) {
+                return this.currentModel.joints.get(current.name);
+            }
+            current = current.parent;
+        }
+
+        return null;
+    }
+
+    selectReviewTargetFromSceneObject(sceneObject) {
+        const joint = this.findJointBySceneObject(sceneObject);
+        if (joint?.name) {
+            const selected = this.selectReviewAnchor({
+                kind: 'joint',
+                targetName: joint.name
+            }, {
+                syncEditor: true,
+                scrollDiagnostics: true
+            });
+            if (selected) {
+                this.setReview3DSelectionEnabled(false);
+            }
+            return selected;
+        }
+
+        const link = this.findLinkBySceneObject(sceneObject);
+        if (link?.name) {
+            const selected = this.selectReviewAnchor({
+                kind: 'link',
+                targetName: link.name
+            }, {
+                syncEditor: true,
+                scrollDiagnostics: true
+            });
+            if (selected) {
+                this.setReview3DSelectionEnabled(false);
+            }
+            return selected;
+        }
+
+        return false;
+    }
+
+    cloneReviewAnchor(anchor) {
+        if (!anchor) {
+            return null;
+        }
+
+        if (anchor.kind === 'resource') {
+            return {
+                kind: 'resource',
+                filePath: normalizePath(anchor.filePath || ''),
+                fileName: anchor.fileName || '',
+                extension: anchor.extension || ''
+            };
+        }
+
+        if (anchor.kind === 'diagnostic') {
+            return {
+                kind: 'diagnostic',
+                anchor: anchor.anchor ? { ...anchor.anchor } : null
+            };
+        }
+
+        return {
+            kind: anchor.kind,
+            targetName: anchor.targetName
+        };
+    }
+
+    cloneReviewComment(comment) {
+        return {
+            id: comment.id,
+            body: comment.body,
+            createdAt: comment.createdAt,
+            anchor: this.cloneReviewAnchor(comment.anchor)
+        };
+    }
+
+    setDirectReviewSelection(anchor) {
+        this.reviewDirectSelection = this.cloneReviewAnchor(anchor);
+        this.renderReviewPanel();
+    }
+
+    getReviewComments() {
+        return this.reviewComments.map(comment => this.cloneReviewComment(comment));
+    }
+
+    setReviewComments(comments = []) {
+        this.reviewComments = Array.isArray(comments)
+            ? comments
+                .map(comment => this.cloneReviewComment(comment))
+                .filter(comment => comment && comment.id && comment.body && comment.anchor)
+            : [];
+        this.renderReviewPanel();
+    }
+
+    getCurrentReviewAnchor() {
+        return this.captureSelectionState();
+    }
+
+    renderReviewPanel() {
+        if (!this.reviewPanelView) {
+            return;
+        }
+
+        this.reviewPanelView.setCurrentAnchor(this.getCurrentReviewAnchor());
+        this.reviewPanelView.setComments(this.getReviewComments());
+    }
+
+    generateReviewCommentId() {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+
+        return `comment-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    addReviewComment(body, anchor = this.getCurrentReviewAnchor()) {
+        const normalizedBody = typeof body === 'string' ? body.trim() : '';
+        if (!normalizedBody) {
+            this.showSnapshotToast(window.i18n?.t('reviewCommentEmpty') || 'Enter a comment before adding it.', 'warning');
+            return false;
+        }
+
+        const normalizedAnchor = this.cloneReviewAnchor(anchor);
+        if (!normalizedAnchor) {
+            this.showSnapshotToast(window.i18n?.t('reviewCommentNoTarget') || 'Select a link, joint, or diagnostic first.', 'warning');
+            return false;
+        }
+
+        this.reviewComments.push({
+            id: this.generateReviewCommentId(),
+            body: normalizedBody,
+            createdAt: new Date().toISOString(),
+            anchor: normalizedAnchor
+        });
+
+        this.renderReviewPanel();
+        this.showSnapshotToast(window.i18n?.t('reviewCommentAdded') || 'Review comment added.', 'success');
+        return true;
+    }
+
+    updateReviewComment(commentId, body) {
+        const normalizedBody = typeof body === 'string' ? body.trim() : '';
+        if (!commentId || !normalizedBody) {
+            this.showSnapshotToast(window.i18n?.t('reviewCommentEmpty') || 'Enter a comment before adding it.', 'warning');
+            return false;
+        }
+
+        const targetComment = this.reviewComments.find(comment => comment.id === commentId);
+        if (!targetComment) {
+            this.showSnapshotToast(window.i18n?.t('reviewCommentFocusFailed') || 'Could not focus the target for this comment.', 'warning');
+            return false;
+        }
+
+        targetComment.body = normalizedBody;
+        this.renderReviewPanel();
+        this.showSnapshotToast(window.i18n?.t('reviewCommentUpdated') || 'Review comment updated.', 'success');
+        return true;
+    }
+
+    deleteReviewComment(commentId) {
+        if (!commentId) {
+            return false;
+        }
+
+        const originalLength = this.reviewComments.length;
+        this.reviewComments = this.reviewComments.filter(comment => comment.id !== commentId);
+        if (this.reviewComments.length === originalLength) {
+            return false;
+        }
+
+        this.renderReviewPanel();
+        this.showSnapshotToast(window.i18n?.t('reviewCommentDeleted') || 'Review comment deleted.', 'success');
+        return true;
+    }
+
+    focusReviewAnchor(anchor) {
+        const result = this.applySelectionSnapshot(anchor);
+        if (!result.restored) {
+            this.showSnapshotToast(result.message, 'warning');
+            return false;
+        }
+
+        this.renderReviewPanel();
+        return true;
+    }
+
+    focusReviewComment(comment) {
+        if (!comment?.anchor) {
+            return false;
+        }
+
+        return this.focusReviewAnchor(comment.anchor);
+    }
+
+    getCurrentModelMetadata() {
+        const currentFile = this.fileHandler?.getCurrentModelFile();
+        let filePath = currentFile?.name || '';
+
+        if (currentFile && this.fileHandler?.getFileMap) {
+            for (const [path, file] of this.fileHandler.getFileMap().entries()) {
+                if (file === currentFile) {
+                    filePath = path;
+                    break;
+                }
+            }
+        }
+
+        return {
+            filePath,
+            fileName: currentFile?.name || '',
+            fileType: this.currentModel?.userData?.fileType || ''
+        };
+    }
+
+    captureCameraState() {
+        if (!this.sceneManager) {
+            return {
+                mode: 'unavailable',
+                reason: window.i18n?.t('snapshotNoCameraState') || 'No restorable camera state is available.'
+            };
+        }
+
+        if (this.currentModel?.userData?.isUSDWASM) {
+            return {
+                mode: 'unavailable',
+                reason: window.i18n?.t('snapshotUsdCameraUnsupported') || 'USD camera state cannot be restored yet.'
+            };
+        }
+
+        const upSelect = document.getElementById('up-select');
+        const { camera, controls } = this.sceneManager;
+        return {
+            mode: 'three',
+            up: upSelect?.value || '+Z',
+            position: [camera.position.x, camera.position.y, camera.position.z],
+            target: [controls.target.x, controls.target.y, controls.target.z]
+        };
+    }
+
+    captureJointState() {
+        const values = {};
+        if (!this.currentModel?.joints) {
+            return { values };
+        }
+
+        this.currentModel.joints.forEach((joint, jointName) => {
+            if (joint.type === 'fixed') {
+                return;
+            }
+
+            if (Number.isFinite(joint.currentValue)) {
+                values[jointName] = joint.currentValue;
+            }
+        });
+
+        return { values };
+    }
+
+    captureSelectionState() {
+        if (this.reviewDirectSelection) {
+            return this.cloneReviewAnchor(this.reviewDirectSelection);
+        }
+
+        const selectedDiagnosticAnchor = this.diagnosticsView?.getSelectedDiagnosticAnchor();
+        if (selectedDiagnosticAnchor) {
+            return {
+                kind: 'diagnostic',
+                anchor: selectedDiagnosticAnchor
+            };
+        }
+
+        const selectedTarget = this.modelGraphView?.getSelectedTarget();
+        if (selectedTarget?.targetType && selectedTarget?.targetName) {
+            return {
+                kind: selectedTarget.targetType,
+                targetName: selectedTarget.targetName
+            };
+        }
+
+        const focusedTarget = this.diagnosticsView?.getSnapshotState().focusedTarget;
+        if (focusedTarget?.targetType && focusedTarget?.targetName) {
+            return {
+                kind: focusedTarget.targetType,
+                targetName: focusedTarget.targetName
+            };
+        }
+
+        return null;
+    }
+
+    captureReviewSnapshot() {
+        return createReviewSnapshot({
+            model: this.getCurrentModelMetadata(),
+            comments: this.getReviewComments(),
+            context: {
+                camera: this.captureCameraState(),
+                selection: this.captureSelectionState(),
+                jointState: this.captureJointState(),
+                diagnostics: this.diagnosticsView?.getSnapshotState() || {
+                    filters: {
+                        level: 'all',
+                        focusedOnly: false
+                    },
+                    focusedTarget: null
+                }
+            }
+        });
+    }
+
+    buildReviewSnapshotFileName(snapshot) {
+        const baseName = snapshot?.model?.fileName
+            ? snapshot.model.fileName.replace(/\.[^.]+$/, '')
+            : 'review';
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        return `${baseName || 'review'}-snapshot-${timestamp}.json`;
+    }
+
+    downloadTextFile(content, fileName, mimeType = 'application/json') {
+        const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }
+
+    handleExportReviewSnapshot() {
+        const snapshot = this.captureReviewSnapshot();
+        const json = stringifyReviewSnapshot(snapshot);
+        this.downloadTextFile(json, this.buildReviewSnapshotFileName(snapshot));
+        this.showSnapshotToast(window.i18n?.t('snapshotExported') || 'Review snapshot exported.', 'success');
+    }
+
+    async handleImportReviewSnapshot(file) {
+        try {
+            const json = await file.text();
+            const snapshot = parseReviewSnapshot(json);
+            const report = this.applyReviewSnapshot(snapshot);
+            this.showSnapshotRestoreReport(report);
+        } catch (error) {
+            this.showSnapshotRestoreReport({
+                restored: [],
+                notRestored: [
+                    `${window.i18n?.t('snapshotImportFailed') || 'Snapshot import failed'}: ${error.message}`
+                ],
+                warnings: []
+            });
+        }
+    }
+
+    applyReviewSnapshot(snapshot) {
+        const report = {
+            restored: [],
+            notRestored: [],
+            warnings: []
+        };
+
+        const currentModel = this.getCurrentModelMetadata();
+        if (snapshot.model?.filePath && currentModel.filePath && snapshot.model.filePath !== currentModel.filePath) {
+            report.warnings.push(
+                `${window.i18n?.t('snapshotModelMismatch') || 'Snapshot was created for a different file'}: ${snapshot.model.filePath}`
+            );
+        }
+
+        const cameraResult = this.applyCameraSnapshot(snapshot.context.camera);
+        if (cameraResult.restored) {
+            report.restored.push(cameraResult.message);
+        } else if (cameraResult.message) {
+            report.notRestored.push(cameraResult.message);
+        }
+
+        const diagnosticsResult = this.applyDiagnosticsSnapshot(snapshot.context.diagnostics);
+        if (diagnosticsResult.restored) {
+            report.restored.push(diagnosticsResult.message);
+        } else if (diagnosticsResult.message) {
+            report.notRestored.push(diagnosticsResult.message);
+        }
+
+        const jointResult = this.applyJointSnapshot(snapshot.context.jointState);
+        if (jointResult.restored) {
+            report.restored.push(jointResult.message);
+        } else if (jointResult.message) {
+            report.notRestored.push(jointResult.message);
+        }
+        if (jointResult.warning) {
+            report.warnings.push(jointResult.warning);
+        }
+
+        const commentsResult = this.applyReviewComments(snapshot.comments);
+        if (commentsResult.restored) {
+            report.restored.push(commentsResult.message);
+        } else if (commentsResult.message) {
+            report.notRestored.push(commentsResult.message);
+        }
+
+        const selectionResult = this.applySelectionSnapshot(snapshot.context.selection);
+        if (selectionResult.restored) {
+            report.restored.push(selectionResult.message);
+        } else if (selectionResult.message) {
+            report.notRestored.push(selectionResult.message);
+        }
+
+        return report;
+    }
+
+    applyCameraSnapshot(cameraState) {
+        if (!cameraState) {
+            return {
+                restored: false,
+                message: window.i18n?.t('snapshotCameraMissing') || 'Camera could not be restored: snapshot does not contain camera state.'
+            };
+        }
+
+        if (cameraState.mode !== 'three') {
+            return {
+                restored: false,
+                message: cameraState.reason || window.i18n?.t('snapshotCameraUnsupported') || 'Camera could not be restored in this view mode.'
+            };
+        }
+
+        if (!this.sceneManager || this.currentModel?.userData?.isUSDWASM) {
+            return {
+                restored: false,
+                message: window.i18n?.t('snapshotUsdCameraUnsupported') || 'USD camera state cannot be restored yet.'
+            };
+        }
+
+        const upSelect = document.getElementById('up-select');
+        if (upSelect) {
+            upSelect.value = cameraState.up || '+Z';
+        }
+
+        this.sceneManager.setUp(cameraState.up || '+Z');
+        this.sceneManager.camera.position.set(...cameraState.position);
+        this.sceneManager.controls.target.set(...cameraState.target);
+        this.sceneManager.controls.update();
+        this.sceneManager.camera.updateProjectionMatrix();
+        this.sceneManager.redraw();
+        this.sceneManager.render();
+
+        return {
+            restored: true,
+            message: window.i18n?.t('snapshotCameraRestored') || 'Camera restored.'
+        };
+    }
+
+    applyDiagnosticsSnapshot(diagnosticsState) {
+        if (!this.diagnosticsView) {
+            return {
+                restored: false,
+                message: window.i18n?.t('snapshotDiagnosticsUnavailable') || 'Diagnostics filters could not be restored.'
+            };
+        }
+
+        this.diagnosticsView.applySnapshotState(diagnosticsState || {});
+        return {
+            restored: true,
+            message: window.i18n?.t('snapshotDiagnosticsRestored') || 'Diagnostics filters restored.'
+        };
+    }
+
+    applyJointSnapshot(jointState) {
+        const entries = Object.entries(jointState?.values || {});
+        if (!entries.length) {
+            return {
+                restored: true,
+                message: window.i18n?.t('snapshotJointStateEmpty') || 'No joint state was stored in the snapshot.'
+            };
+        }
+
+        if (!this.currentModel?.joints || this.currentModel.userData?.isUSDWASM) {
+            return {
+                restored: false,
+                message: window.i18n?.t('snapshotJointStateUnavailable') || 'Joint state could not be restored for the current model.'
+            };
+        }
+
+        const restored = [];
+        const missing = [];
+
+        entries.forEach(([jointName, value]) => {
+            const joint = this.currentModel.joints.get(jointName);
+            if (!joint || joint.type === 'fixed') {
+                missing.push(jointName);
+                return;
+            }
+
+            ModelLoaderFactory.setJointAngle(this.currentModel, jointName, value, true);
+            joint.currentValue = value;
+            restored.push(jointName);
+
+            if (this.sceneManager?.constraintManager) {
+                this.sceneManager.constraintManager.applyConstraints(this.currentModel, joint);
+            }
+        });
+
+        this.syncJointControlsFromModel();
+
+        if (this.sceneManager) {
+            this.sceneManager.updateEnvironment();
+            this.sceneManager.redraw();
+            this.sceneManager.render();
+            if (this.sceneManager.onMeasurementUpdate) {
+                this.sceneManager.onMeasurementUpdate();
+            }
+        }
+
+        return {
+            restored: restored.length > 0,
+            message: restored.length > 0
+                ? `${window.i18n?.t('snapshotJointStateRestored') || 'Joint state restored'}: ${restored.length}`
+                : window.i18n?.t('snapshotJointStateUnavailable') || 'Joint state could not be restored for the current model.',
+            warning: missing.length > 0
+                ? `${window.i18n?.t('snapshotJointStateMissing') || 'Missing joints during restore'}: ${missing.join(', ')}`
+                : ''
+        };
+    }
+
+    syncJointControlsFromModel() {
+        if (!this.currentModel?.joints) {
+            return;
+        }
+
+        const useDegrees = document.querySelector('#unit-deg.active');
+        document.querySelectorAll('.joint-slider').forEach(slider => {
+            const jointName = slider.getAttribute('data-joint');
+            const joint = jointName ? this.currentModel.joints.get(jointName) : null;
+            if (!joint || !Number.isFinite(joint.currentValue)) {
+                return;
+            }
+
+            slider.value = joint.currentValue;
+
+            const valueInput = document.querySelector(`input[data-joint-input="${jointName}"]`);
+            if (valueInput) {
+                valueInput.value = useDegrees
+                    ? (joint.currentValue * 180 / Math.PI).toFixed(1)
+                    : joint.currentValue.toFixed(2);
+            }
+        });
+    }
+
+    applyReviewComments(comments = []) {
+        this.setReviewComments(comments || []);
+
+        return {
+            restored: true,
+            message: `${window.i18n?.t('reviewCommentsImported') || 'Review comments imported'}: ${this.reviewComments.length}`
+        };
+    }
+
+    applySelectionSnapshot(selection) {
+        this.clearReviewSelection({ clearDiagnosticsFocus: false });
+
+        if (!selection) {
+            return {
+                restored: true,
+                message: window.i18n?.t('snapshotSelectionCleared') || 'Selection cleared.'
+            };
+        }
+
+        if (selection.kind === 'diagnostic') {
+            const restored = this.diagnosticsView?.selectDiagnosticByAnchor(selection.anchor, { scroll: true });
+            return restored
+                ? {
+                    restored: true,
+                    message: window.i18n?.t('snapshotSelectionRestored') || 'Selection restored.'
+                }
+                : {
+                    restored: false,
+                    message: window.i18n?.t('snapshotDiagnosticSelectionMissing') || 'Diagnostic selection could not be found in the current diagnostics.'
+                };
+        }
+
+        if (selection.kind === 'resource') {
+            const restored = this.focusReviewResource(selection, { loadFile: true, scroll: true });
+            return restored
+                ? {
+                    restored: true,
+                    message: window.i18n?.t('snapshotSelectionRestored') || 'Selection restored.'
+                }
+                : {
+                    restored: false,
+                    message: `${window.i18n?.t('snapshotSelectionMissing') || 'Selection target could not be found'}: ${selection.filePath || selection.fileName || ''}`
+                };
+        }
+
+        if (selection.kind === 'link' || selection.kind === 'joint') {
+            const restored = this.modelGraphView?.selectTarget(selection.kind, selection.targetName, {
+                syncEditor: false,
+                scrollDiagnostics: true
+            });
+
+            return restored
+                ? {
+                    restored: true,
+                    message: window.i18n?.t('snapshotSelectionRestored') || 'Selection restored.'
+                }
+                : {
+                    restored: false,
+                    message: `${window.i18n?.t('snapshotSelectionMissing') || 'Selection target could not be found'}: ${selection.targetName}`
+                };
+        }
+
+        return {
+            restored: false,
+            message: window.i18n?.t('snapshotSelectionMissing') || 'Selection target could not be found.'
+        };
+    }
+
+    showSnapshotToast(message, type = 'info') {
+        let toast = document.getElementById('snapshot-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'snapshot-toast';
+            toast.style.cssText = `
+                position: fixed;
+                top: 88px;
+                right: 20px;
+                max-width: 360px;
+                padding: 12px 16px;
+                border-radius: 12px;
+                color: white;
+                font-size: 13px;
+                line-height: 1.5;
+                box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+                z-index: 120;
+                backdrop-filter: blur(12px);
+            `;
+            document.body.appendChild(toast);
+        }
+
+        const colors = {
+            success: 'rgba(74, 222, 128, 0.92)',
+            error: 'rgba(255, 107, 107, 0.94)',
+            warning: 'rgba(251, 191, 36, 0.94)',
+            info: 'rgba(74, 158, 255, 0.94)'
+        };
+
+        toast.style.background = colors[type] || colors.info;
+        toast.textContent = message;
+
+        clearTimeout(this.snapshotToastTimer);
+        this.snapshotToastTimer = setTimeout(() => {
+            toast.remove();
+        }, 3000);
+    }
+
+    showSnapshotRestoreReport(report) {
+        const existing = document.getElementById('snapshot-restore-report');
+        if (existing) {
+            existing.remove();
+        }
+
+        const panel = document.createElement('div');
+        panel.id = 'snapshot-restore-report';
+        panel.style.cssText = `
+            position: fixed;
+            top: 88px;
+            right: 20px;
+            width: min(420px, calc(100vw - 40px));
+            max-height: min(70vh, 520px);
+            overflow: auto;
+            padding: 16px;
+            border-radius: 16px;
+            background: var(--glass-bg);
+            color: var(--text-primary);
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 18px 42px rgba(0, 0, 0, 0.22);
+            backdrop-filter: blur(18px) saturate(150%);
+            z-index: 121;
+        `;
+
+        const titleRow = document.createElement('div');
+        titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;';
+
+        const title = document.createElement('div');
+        title.textContent = window.i18n?.t('snapshotRestoreReportTitle') || 'Snapshot restore report';
+        title.style.cssText = 'font-size:14px;font-weight:600;';
+        titleRow.appendChild(title);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.textContent = '✕';
+        closeBtn.style.cssText = `
+            border:none;
+            border-radius:8px;
+            width:24px;
+            height:24px;
+            cursor:pointer;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-secondary);
+        `;
+        closeBtn.addEventListener('click', () => panel.remove());
+        titleRow.appendChild(closeBtn);
+        panel.appendChild(titleRow);
+
+        const createSection = (label, items, color) => {
+            if (!items.length) {
+                return null;
+            }
+
+            const section = document.createElement('div');
+            section.style.cssText = 'margin-bottom:12px;';
+
+            const heading = document.createElement('div');
+            heading.textContent = label;
+            heading.style.cssText = `font-size:12px;font-weight:600;color:${color};margin-bottom:6px;`;
+            section.appendChild(heading);
+
+            items.forEach(item => {
+                const line = document.createElement('div');
+                line.textContent = `- ${item}`;
+                line.style.cssText = 'font-size:12px;line-height:1.5;margin-bottom:4px;white-space:pre-wrap;';
+                section.appendChild(line);
+            });
+
+            return section;
+        };
+
+        const restoredSection = createSection(
+            window.i18n?.t('snapshotRestored') || 'Restored',
+            report.restored || [],
+            '#4ade80'
+        );
+        const notRestoredSection = createSection(
+            window.i18n?.t('snapshotNotRestored') || 'Could not restore',
+            report.notRestored || [],
+            '#ff9b9b'
+        );
+        const warningsSection = createSection(
+            window.i18n?.t('snapshotWarnings') || 'Warnings',
+            report.warnings || [],
+            '#fbbf24'
+        );
+
+        if (restoredSection) panel.appendChild(restoredSection);
+        if (notRestoredSection) panel.appendChild(notRestoredSection);
+        if (warningsSection) panel.appendChild(warningsSection);
+
+        if (!restoredSection && !notRestoredSection && !warningsSection) {
+            const empty = document.createElement('div');
+            empty.textContent = window.i18n?.t('snapshotNothingToReport') || 'Nothing to report.';
+            empty.style.cssText = 'font-size:12px;line-height:1.5;';
+            panel.appendChild(empty);
+        }
+
+        document.body.appendChild(panel);
+
+        clearTimeout(this.snapshotReportTimer);
+        this.snapshotReportTimer = setTimeout(() => {
+            panel.remove();
+        }, 12000);
     }
 
     /**
@@ -742,23 +1787,15 @@ class App {
      * Handle file click
      */
     handleFileClick(fileInfo) {
-        const ext = fileInfo.ext;
-        const modelExts = ['urdf', 'xacro', 'xml', 'usd', 'usda', 'usdc', 'usdz'];
-        const meshExts = ['dae', 'stl', 'obj', 'collada'];
-
-        if (modelExts.includes(ext)) {
-            // Robot model file, load model and load into editor
-            this.fileHandler.loadFile(fileInfo.file);
-
-            // If editor is open, auto-load file into editor
-            const editorPanel = document.getElementById('code-editor-panel');
-            if (editorPanel && editorPanel.classList.contains('visible') && this.codeEditorManager) {
-                this.codeEditorManager.loadFile(fileInfo.file);
-            }
-        } else if (meshExts.includes(ext)) {
-            // Mesh file, load as standalone model only, don't load into editor
-            this.fileHandler.loadMeshAsModel(fileInfo.file, fileInfo.name);
+        const anchor = this.buildReviewResourceAnchor(fileInfo);
+        if (!anchor) {
+            return;
         }
+
+        this.selectReviewAnchor(anchor, {
+            loadFile: true,
+            scroll: false
+        });
     }
 
     /**
@@ -911,6 +1948,12 @@ class App {
                 span.setAttribute('data-i18n', key);
             }
         }
+
+        if (this.diagnosticsView) {
+            this.diagnosticsView.render(this.currentModel, this.fileHandler?.getCurrentModelFile());
+        }
+
+        this.renderReviewPanel();
     }
 
     /**
@@ -941,7 +1984,15 @@ class App {
         const ext = fileName.toLowerCase().split('.').pop();
         const typeMap = {
             'urdf': 'urdf',
+            'xacro': 'urdf',
+            'mjcf': 'mjcf',
             'xml': 'mjcf',
+            'dae': 'mesh',
+            'stl': 'mesh',
+            'obj': 'mesh',
+            'collada': 'mesh',
+            'gltf': 'mesh',
+            'glb': 'mesh',
             'usd': 'usd',
             'usda': 'usd',
             'usdc': 'usd',
@@ -1030,3 +2081,7 @@ app.init();
 
 // Expose to global (for debugging)
 window.app = app;
+window.app.listDiagnosticsFixtures = () => DIAGNOSTICS_FIXTURES.map(fixture => ({ id: fixture.id, title: fixture.title }));
+window.app.loadDiagnosticsFixture = (id) => loadDiagnosticsFixture(window.app, id);
+window.app.runDiagnosticsFixture = (id, settleMs) => runDiagnosticsFixture(window.app, id, settleMs);
+window.app.runAllDiagnosticsFixtures = (settleMs) => runAllDiagnosticsFixtures(window.app, settleMs);

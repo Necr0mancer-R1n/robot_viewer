@@ -4,6 +4,7 @@
  */
 import { ModelLoaderFactory } from '../loaders/ModelLoaderFactory.js';
 import { XMLUpdater } from '../utils/XMLUpdater.js';
+import { indexDiagnosticsByTarget } from '../utils/DiagnosticsUtils.js';
 
 export class JointControlsUI {
     constructor(sceneManager) {
@@ -11,6 +12,7 @@ export class JointControlsUI {
         this.angleUnit = 'rad';
         this.initialJointValues = new Map(); // Save initial joint positions when model loads
         this.codeEditorManager = null; // Code editor manager reference
+        this.diagnosticsView = null;
         this.isUpdatingFromEditor = false; // Flag to prevent circular updates
     }
 
@@ -19,6 +21,10 @@ export class JointControlsUI {
      */
     setCodeEditorManager(codeEditorManager) {
         this.codeEditorManager = codeEditorManager;
+    }
+
+    setDiagnosticsView(diagnosticsView) {
+        this.diagnosticsView = diagnosticsView;
     }
 
     /**
@@ -120,6 +126,7 @@ export class JointControlsUI {
 
         // Save initial joint values when model loads
         this.initialJointValues.clear();
+        const diagnosticsIndex = indexDiagnosticsByTarget(model);
         model.joints.forEach((joint, name) => {
             if (joint.type !== 'fixed') {
                 const limits = joint.limits || {};
@@ -132,7 +139,7 @@ export class JointControlsUI {
 
         model.joints.forEach((joint, name) => {
             if (joint.type === 'fixed') return;
-            const control = this.createJointControl(joint, model);
+            const control = this.createJointControl(joint, model, diagnosticsIndex.joint.get(name) || []);
             container.appendChild(control);
         });
     }
@@ -140,7 +147,7 @@ export class JointControlsUI {
     /**
      * Create joint control element
      */
-    createJointControl(joint, model) {
+    createJointControl(joint, model, diagnostics = []) {
         const div = document.createElement('div');
         div.className = 'joint-control';
 
@@ -154,6 +161,21 @@ export class JointControlsUI {
         name.title = joint.name;
 
         header.appendChild(name);
+
+        if (diagnostics.length > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'joint-diagnostic-badge';
+            badge.textContent = diagnostics.length;
+            badge.title = diagnostics.map(item => item.message).join('\n');
+            header.appendChild(badge);
+
+            name.style.cursor = 'pointer';
+            name.addEventListener('click', () => {
+                this.diagnosticsView?.clearSelectedDiagnostic();
+                this.diagnosticsView?.focusTarget('joint', joint.name);
+                this.codeEditorManager?.scrollToJoint(joint.name);
+            });
+        }
 
         // Second row: editable limit labels + slider
         const sliderRow = document.createElement('div');

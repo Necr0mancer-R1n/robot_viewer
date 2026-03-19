@@ -249,5 +249,20 @@ export class CodeEditor {
             return false;
         }
     }
+
+    scrollToLineOrSearch(lineNumber, searchText) {
+        if (!this.view) return false;
+
+        if (lineNumber && Number.isFinite(lineNumber)) {
+            this.scrollToLine(lineNumber, true);
+            return true;
+        }
+
+        if (searchText) {
+            return this.searchAndScroll(searchText, true);
+        }
+
+        return false;
+    }
 }
 

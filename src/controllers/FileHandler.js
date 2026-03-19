@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { ModelLoaderFactory } from '../loaders/ModelLoaderFactory.js';
 import { readFileContent, getFileFromEntry, getFileTypeFromExtension, getFileDisplayType } from '../utils/FileUtils.js';
+import { addDiagnostics, addRuntimeDiagnostic, clearRuntimeDiagnostics, createDiagnostic, getRuntimeDiagnostics, upsertResourceSummaryDiagnostic, validateModelDiagnostics } from '../utils/DiagnosticsUtils.js';
 
 export class FileHandler {
     constructor() {
@@ -12,6 +13,7 @@ export class FileHandler {
         this.availableModels = [];
         this.currentModelFile = null;
         this.onModelLoaded = null; // Callback function
+        this.onLoadError = null;
         this.usdViewerManager = null; // USD viewer manager (lazy loaded)
     }
 
@@ -190,8 +192,8 @@ export class FileHandler {
      */
     async findAllLoadableFiles(files) {
         const supportedExtensions = {
-            model: ['urdf', 'xacro', 'xml', 'usd', 'usda', 'usdc', 'usdz'],
-            mesh: ['dae', 'stl', 'obj', 'collada']
+            model: ['urdf', 'xacro', 'mjcf', 'xml', 'usd', 'usda', 'usdc', 'usdz'],
+            mesh: ['dae', 'stl', 'obj', 'collada', 'gltf', 'glb']
         };
         const loadableFiles = [];
 
@@ -276,6 +278,7 @@ export class FileHandler {
      */
     async loadFile(file) {
         this.currentModelFile = file;
+        clearRuntimeDiagnostics();
 
         try {
             const fileName = file.name.toLowerCase();
@@ -299,6 +302,11 @@ export class FileHandler {
                         await this.usdViewerInitializer();
                     } catch (error) {
                         console.error('USD viewer initialization failed:', error);
+                        this.notifyLoadError(error, {
+                            code: 'usd/init-failed',
+                            source: 'usd',
+                            filePath: fullPath
+                        });
                         return;
                     }
                 }
@@ -317,6 +325,14 @@ export class FileHandler {
                     { usdViewerManager: this.usdViewerManager }
                 );
 
+                model.userData.filePath = fullPath;
+                model.userData.fileType = 'usd';
+                addDiagnostics(model, validateModelDiagnostics(model, {
+                    source: 'usd',
+                    filePath: fullPath
+                }));
+                upsertResourceSummaryDiagnostic(model);
+
                 this.onModelLoaded?.(model, file, false, null);
                 document.getElementById('drop-zone')?.classList.remove('show');
                 document.getElementById('drop-zone')?.classList.remove('drag-over');
@@ -329,6 +345,11 @@ export class FileHandler {
             // Detect if USDC binary format (based on content)
             if (this.isUSDCBinaryContent(content)) {
                 console.error('Cannot load USDC binary format, please convert to USDZ or USDA');
+                this.notifyLoadError(new Error('Cannot load USDC binary format, please convert to USDZ or USDA'), {
+                    code: 'usd/usdc-binary',
+                    source: 'usd',
+                    filePath: fullPath
+                });
                 return;
             }
 
@@ -336,6 +357,11 @@ export class FileHandler {
 
             if (!fileType) {
                 console.error(`${window.i18n.t('unsupportedFormat')}: ${file.name}`);
+                this.notifyLoadError(new Error(`${window.i18n.t('unsupportedFormat')}: ${file.name}`), {
+                    code: 'model/unsupported-format',
+                    source: 'file',
+                    filePath: fullPath
+                });
                 return;
             }
 
@@ -352,6 +378,15 @@ export class FileHandler {
                 { usdViewerManager: this.usdViewerManager }
             );
 
+            model.userData.filePath = fullPath;
+            model.userData.fileType = fileType;
+            addDiagnostics(model, validateModelDiagnostics(model, {
+                source: fileType,
+                filePath: fullPath,
+                content
+            }));
+            upsertResourceSummaryDiagnostic(model);
+
             // Notify model loaded (pass null as snapshot, let main.js create it)
             this.onModelLoaded?.(model, file, false, null);
 
@@ -367,6 +402,12 @@ export class FileHandler {
             } else {
                 console.error(`${window.i18n.t('loadFailed')}: ${error.message}`);
             }
+
+            this.notifyLoadError(error, {
+                code: 'model/load-failed',
+                source: 'file',
+                filePath: file?.name || ''
+            });
 
             // Remove snapshot if exists
             const snapshot = document.getElementById('canvas-snapshot');
@@ -471,6 +512,7 @@ export class FileHandler {
      * Load single mesh file as model
      */
     async loadMeshAsModel(file, fileName) {
+        clearRuntimeDiagnostics();
         try {
             const meshObject = await ModelLoaderFactory.loadMeshFileDirect(file, fileName);
 
@@ -500,22 +542,92 @@ export class FileHandler {
                 }
             });
 
+            const buildMeshLinks = (rootObject, sourceFileName) => {
+                const links = new Map();
+                const usedNames = new Set();
+                const baseName = sourceFileName.replace(/\.[^.]+$/, '') || 'mesh';
+                let unnamedIndex = 1;
+
+                const createUniqueName = (preferredName) => {
+                    let candidate = (preferredName || '').trim();
+                    if (!candidate) {
+                        candidate = `${baseName}_part_${unnamedIndex++}`;
+                    }
+
+                    if (!usedNames.has(candidate)) {
+                        usedNames.add(candidate);
+                        return candidate;
+                    }
+
+                    let suffix = 2;
+                    while (usedNames.has(`${candidate}_${suffix}`)) {
+                        suffix += 1;
+                    }
+                    const uniqueName = `${candidate}_${suffix}`;
+                    usedNames.add(uniqueName);
+                    return uniqueName;
+                };
+
+                rootObject.traverse((child) => {
+                    if (!child.isMesh) {
+                        return;
+                    }
+
+                    const linkName = createUniqueName(child.name);
+                    child.userData = child.userData || {};
+                    child.userData.reviewLinkName = linkName;
+
+                    links.set(linkName, {
+                        name: linkName,
+                        threeObject: child,
+                        visuals: [{
+                            name: linkName,
+                            threeObject: child,
+                            geometry: { mesh: sourceFileName }
+                        }],
+                        inertial: null,
+                        userData: {
+                            sourceType: 'mesh',
+                            sourceFileName
+                        }
+                    });
+                });
+
+                if (links.size === 0) {
+                    const linkName = createUniqueName(rootObject.name || 'mesh_root');
+                    rootObject.userData = rootObject.userData || {};
+                    rootObject.userData.reviewLinkName = linkName;
+
+                    links.set(linkName, {
+                        name: linkName,
+                        threeObject: rootObject,
+                        visuals: [{
+                            name: linkName,
+                            threeObject: rootObject,
+                            geometry: { mesh: sourceFileName }
+                        }],
+                        inertial: null,
+                        userData: {
+                            sourceType: 'mesh',
+                            sourceFileName
+                        }
+                    });
+                }
+
+                return links;
+            };
+
+            const meshLinks = buildMeshLinks(meshObject, fileName);
+            const rootLinkName = meshLinks.keys().next().value || 'mesh_root';
             const simpleMeshModel = {
                 name: fileName,
-                rootLink: 'mesh_root',
-                links: new Map([
-                    ['mesh_root', {
-                        name: 'mesh_root',
-                        threeObject: meshObject,
-                        visuals: [{
-                            threeObject: meshObject,
-                            geometry: { mesh: fileName }
-                        }],
-                        inertial: null
-                    }]
-                ]),
+                rootLink: rootLinkName,
+                links: meshLinks,
                 joints: new Map(),
-                threeObject: meshObject
+                threeObject: meshObject,
+                userData: {
+                    fileType: 'mesh'
+                }
             };
 
             this.currentModelFile = file;
@@ -523,6 +635,11 @@ export class FileHandler {
 
         } catch (error) {
             console.error('Failed to load mesh file:', error);
+            this.notifyLoadError(error, {
+                code: 'mesh/load-failed',
+                source: 'mesh',
+                filePath: fileName
+            });
 
             const snapshot = document.getElementById('canvas-snapshot');
             if (snapshot?.parentNode) {
@@ -550,6 +667,19 @@ export class FileHandler {
      */
     getCurrentModelFile() {
         return this.currentModelFile;
+    }
+
+    notifyLoadError(error, options = {}) {
+        const diagnostic = addRuntimeDiagnostic(createDiagnostic({
+            level: 'error',
+            code: options.code || 'runtime/error',
+            source: options.source || 'runtime',
+            message: error?.message || String(error),
+            details: error?.stack || '',
+            filePath: options.filePath || ''
+        }));
+
+        this.onLoadError?.(diagnostic, getRuntimeDiagnostics());
     }
 }
 
